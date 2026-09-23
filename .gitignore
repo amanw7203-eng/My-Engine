@@ -5,3 +5,6 @@ out/
 # Editor / IDE
 .vs/
 *.user
+
+# Dear ImGui saved window layout (per user)
+imgui.ini
