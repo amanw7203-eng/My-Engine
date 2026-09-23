@@ -1,16 +1,18 @@
 #pragma once
 
 #include <glad/gl.h>
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
 #include <span>
 
 // One vertex as stored in the vertex buffer. Must match the attribute
-// locations in the shaders: location 0 = position, location 1 = color.
+// locations in the shaders: 0 = position, 1 = color, 2 = uv.
 struct Vertex
 {
     glm::vec3 position;
-    glm::vec3 color;
+    glm::vec3 color; // multiplied with the texture; white = texture as-is
+    glm::vec2 uv;    // texture coordinate: (0,0) bottom-left, (1,1) top-right
 };
 
 // Owns the GPU buffers for a piece of indexed geometry (VAO + VBO + EBO).
@@ -31,8 +33,12 @@ public:
     // Draws the mesh with whichever shader is currently bound.
     void Draw() const;
 
-    // A 1x1 rectangle centred on the origin with a different color per corner.
+    // A 1x1 upright rectangle centred on the origin, facing +Z, UVs 0..1.
     static Mesh CreateQuad();
+
+    // A flat size x size square on the XZ plane (a floor), centred on the
+    // origin. The texture repeats uvRepeat times across each side.
+    static Mesh CreatePlane(float size, float uvRepeat);
 
 private:
     void Release();

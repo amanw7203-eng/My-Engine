@@ -27,6 +27,9 @@ Mesh::Mesh(std::span<const Vertex> vertices, std::span<const unsigned int> indic
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride,
                           reinterpret_cast<void*>(offsetof(Vertex, color)));
     glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride,
+                          reinterpret_cast<void*>(offsetof(Vertex, uv)));
+    glEnableVertexAttribArray(2);
 
     // Unbind the VAO first: unbinding the EBO while it is bound would
     // remove the EBO from it.
@@ -67,14 +70,37 @@ void Mesh::Draw() const
 
 Mesh Mesh::CreateQuad()
 {
+    const glm::vec3 white(1.0f);
     const Vertex vertices[] = {
-        { { -0.5f, -0.5f, 0.0f }, { 1.0f, 0.0f, 0.0f } }, // 0: bottom left  - red
-        { {  0.5f, -0.5f, 0.0f }, { 0.0f, 1.0f, 0.0f } }, // 1: bottom right - green
-        { {  0.5f,  0.5f, 0.0f }, { 0.0f, 0.0f, 1.0f } }, // 2: top right    - blue
-        { { -0.5f,  0.5f, 0.0f }, { 1.0f, 1.0f, 0.0f } }, // 3: top left     - yellow
+        { { -0.5f, -0.5f, 0.0f }, white, { 0.0f, 0.0f } }, // 0: bottom left
+        { {  0.5f, -0.5f, 0.0f }, white, { 1.0f, 0.0f } }, // 1: bottom right
+        { {  0.5f,  0.5f, 0.0f }, white, { 1.0f, 1.0f } }, // 2: top right
+        { { -0.5f,  0.5f, 0.0f }, white, { 0.0f, 1.0f } }, // 3: top left
     };
 
     // Two triangles built from those corners, reusing vertices 0 and 2.
+    const unsigned int indices[] = {
+        0, 1, 2,
+        2, 3, 0,
+    };
+
+    return Mesh(vertices, indices);
+}
+
+Mesh Mesh::CreatePlane(float size, float uvRepeat)
+{
+    const float h = size * 0.5f;
+    const float r = uvRepeat;
+    const glm::vec3 white(1.0f);
+    // Wound counter-clockwise when seen from above (+Y), same as CreateQuad
+    // seen from the front, so both face the same way if culling is enabled.
+    const Vertex vertices[] = {
+        { { -h, 0.0f,  h }, white, { 0.0f, 0.0f } }, // 0: near left
+        { {  h, 0.0f,  h }, white, { r,    0.0f } }, // 1: near right
+        { {  h, 0.0f, -h }, white, { r,    r    } }, // 2: far right
+        { { -h, 0.0f, -h }, white, { 0.0f, r    } }, // 3: far left
+    };
+
     const unsigned int indices[] = {
         0, 1, 2,
         2, 3, 0,

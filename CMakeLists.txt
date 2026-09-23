@@ -38,15 +38,22 @@ find_package(OpenGL REQUIRED)
 add_library(glad STATIC external/glad/src/gl.c)
 target_include_directories(glad PUBLIC external/glad/include)
 
+# stb_image: loads PNG/JPG/TGA/BMP/... into raw pixels.
+# (https://github.com/nothings/stb at commit 2c980bb, v2.30)
+add_library(stb_image STATIC external/stb/stb_image.c)
+target_include_directories(stb_image PUBLIC external/stb)
+
 # --- Engine -----------------------------------------------------------------
 add_executable(MyEngine
     src/main.cpp
+    src/Renderer/Camera.cpp
     src/Renderer/Mesh.cpp
     src/Renderer/Shader.cpp
+    src/Renderer/Texture.cpp
 )
 
 target_include_directories(MyEngine PRIVATE src)
-target_link_libraries(MyEngine PRIVATE SDL3::SDL3 OpenGL::GL glad glm::glm)
+target_link_libraries(MyEngine PRIVATE SDL3::SDL3 OpenGL::GL glad glm::glm stb_image)
 
 if(MSVC)
     target_compile_options(MyEngine PRIVATE /W4 /permissive-)

@@ -27,6 +27,7 @@ public:
     void Bind() const;
 
     // Uniform setters. The shader must be bound first.
+    void SetInt(const char* name, int value) const;
     void SetMat4(const char* name, const glm::mat4& value) const;
 
 private:
