@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.25)
+cmake_minimum_required(VERSION 3.26)
 project(MyEngine LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -22,15 +22,33 @@ FetchContent_MakeAvailable(SDL3)
 
 find_package(OpenGL REQUIRED)
 
+# glad: loads modern OpenGL functions at runtime. Generated for GL 3.3 core
+# (glad2: glad --api gl:core=3.3 --extensions "" --out-path external/glad c)
+add_library(glad STATIC external/glad/src/gl.c)
+target_include_directories(glad PUBLIC external/glad/include)
+
 # --- Engine -----------------------------------------------------------------
 add_executable(MyEngine
     src/main.cpp
+    src/Renderer/Mesh.cpp
+    src/Renderer/Shader.cpp
 )
 
-target_link_libraries(MyEngine PRIVATE SDL3::SDL3 OpenGL::GL)
+target_include_directories(MyEngine PRIVATE src)
+target_link_libraries(MyEngine PRIVATE SDL3::SDL3 OpenGL::GL glad)
 
 if(MSVC)
     target_compile_options(MyEngine PRIVATE /W4 /permissive-)
 else()
     target_compile_options(MyEngine PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+
+# Copy assets/ next to the executable on every build (only changed files),
+# so the engine finds them no matter which folder it is started from.
+add_custom_target(copy_assets ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+            ${CMAKE_SOURCE_DIR}/assets
+            $<TARGET_FILE_DIR:MyEngine>/assets
+    COMMENT "Copying assets"
+)
+add_dependencies(MyEngine copy_assets)

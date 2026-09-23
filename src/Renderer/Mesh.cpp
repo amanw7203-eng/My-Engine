@@ -1,0 +1,94 @@
+#include "Renderer/Mesh.h"
+
+#include <cstddef>
+#include <utility>
+
+Mesh::Mesh(std::span<const Vertex> vertices, std::span<const unsigned int> indices)
+    : m_IndexCount(static_cast<GLsizei>(indices.size()))
+{
+    glGenVertexArrays(1, &m_Vao);
+    glGenBuffers(1, &m_Vbo);
+    glGenBuffers(1, &m_Ebo);
+
+    glBindVertexArray(m_Vao);
+
+    glBindBuffer(GL_ARRAY_BUFFER, m_Vbo);
+    glBufferData(GL_ARRAY_BUFFER, vertices.size_bytes(), vertices.data(), GL_STATIC_DRAW);
+
+    // Binding the EBO while the VAO is bound stores it in the VAO.
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_Ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size_bytes(), indices.data(), GL_STATIC_DRAW);
+
+    // Describe the Vertex struct to OpenGL: which floats go to which location.
+    const GLsizei stride = sizeof(Vertex);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride,
+                          reinterpret_cast<void*>(offsetof(Vertex, position)));
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride,
+                          reinterpret_cast<void*>(offsetof(Vertex, color)));
+    glEnableVertexAttribArray(1);
+
+    // Unbind the VAO first: unbinding the EBO while it is bound would
+    // remove the EBO from it.
+    glBindVertexArray(0);
+}
+
+Mesh::~Mesh()
+{
+    Release();
+}
+
+Mesh::Mesh(Mesh&& other) noexcept
+    : m_Vao(std::exchange(other.m_Vao, 0))
+    , m_Vbo(std::exchange(other.m_Vbo, 0))
+    , m_Ebo(std::exchange(other.m_Ebo, 0))
+    , m_IndexCount(std::exchange(other.m_IndexCount, 0))
+{
+}
+
+Mesh& Mesh::operator=(Mesh&& other) noexcept
+{
+    if (this != &other)
+    {
+        Release();
+        m_Vao = std::exchange(other.m_Vao, 0);
+        m_Vbo = std::exchange(other.m_Vbo, 0);
+        m_Ebo = std::exchange(other.m_Ebo, 0);
+        m_IndexCount = std::exchange(other.m_IndexCount, 0);
+    }
+    return *this;
+}
+
+void Mesh::Draw() const
+{
+    glBindVertexArray(m_Vao);
+    glDrawElements(GL_TRIANGLES, m_IndexCount, GL_UNSIGNED_INT, nullptr);
+}
+
+Mesh Mesh::CreateQuad()
+{
+    const Vertex vertices[] = {
+        { { -0.5f, -0.5f, 0.0f }, { 1.0f, 0.0f, 0.0f } }, // 0: bottom left  - red
+        { {  0.5f, -0.5f, 0.0f }, { 0.0f, 1.0f, 0.0f } }, // 1: bottom right - green
+        { {  0.5f,  0.5f, 0.0f }, { 0.0f, 0.0f, 1.0f } }, // 2: top right    - blue
+        { { -0.5f,  0.5f, 0.0f }, { 1.0f, 1.0f, 0.0f } }, // 3: top left     - yellow
+    };
+
+    // Two triangles built from those corners, reusing vertices 0 and 2.
+    const unsigned int indices[] = {
+        0, 1, 2,
+        2, 3, 0,
+    };
+
+    return Mesh(vertices, indices);
+}
+
+void Mesh::Release()
+{
+    // Deleting name 0 is a no-op, so moved-from meshes are fine.
+    glDeleteVertexArrays(1, &m_Vao);
+    glDeleteBuffers(1, &m_Vbo);
+    glDeleteBuffers(1, &m_Ebo);
+    m_Vao = m_Vbo = m_Ebo = 0;
+    m_IndexCount = 0;
+}
