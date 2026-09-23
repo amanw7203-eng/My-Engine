@@ -1,6 +1,7 @@
 #pragma once
 
 #include <glad/gl.h>
+#include <glm/vec3.hpp>
 
 #include <span>
 
@@ -8,8 +9,8 @@
 // locations in the shaders: location 0 = position, location 1 = color.
 struct Vertex
 {
-    float position[3];
-    float color[3];
+    glm::vec3 position;
+    glm::vec3 color;
 };
 
 // Owns the GPU buffers for a piece of indexed geometry (VAO + VBO + EBO).

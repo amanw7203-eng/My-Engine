@@ -1,6 +1,7 @@
 #pragma once
 
 #include <glad/gl.h>
+#include <glm/mat4x4.hpp>
 
 #include <filesystem>
 
@@ -24,6 +25,9 @@ public:
     bool IsValid() const { return m_Program != 0; }
 
     void Bind() const;
+
+    // Uniform setters. The shader must be bound first.
+    void SetMat4(const char* name, const glm::mat4& value) const;
 
 private:
     GLuint m_Program = 0;

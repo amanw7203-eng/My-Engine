@@ -20,6 +20,17 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(SDL3)
 
+# GLM: header-only math library (vectors, matrices, transforms).
+set(GLM_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(GLM_BUILD_LIBRARY OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    glm
+    GIT_REPOSITORY https://github.com/g-truc/glm.git
+    GIT_TAG        1.0.3
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(glm)
+
 find_package(OpenGL REQUIRED)
 
 # glad: loads modern OpenGL functions at runtime. Generated for GL 3.3 core
@@ -35,7 +46,7 @@ add_executable(MyEngine
 )
 
 target_include_directories(MyEngine PRIVATE src)
-target_link_libraries(MyEngine PRIVATE SDL3::SDL3 OpenGL::GL glad)
+target_link_libraries(MyEngine PRIVATE SDL3::SDL3 OpenGL::GL glad glm::glm)
 
 if(MSVC)
     target_compile_options(MyEngine PRIVATE /W4 /permissive-)

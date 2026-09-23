@@ -1,5 +1,7 @@
 #include "Renderer/Shader.h"
 
+#include <glm/gtc/type_ptr.hpp>
+
 #include <fstream>
 #include <iostream>
 #include <optional>
@@ -107,4 +109,11 @@ Shader& Shader::operator=(Shader&& other) noexcept
 void Shader::Bind() const
 {
     glUseProgram(m_Program);
+}
+
+void Shader::SetMat4(const char* name, const glm::mat4& value) const
+{
+    // GLM stores matrices column-major, same as OpenGL, so no transpose.
+    glUniformMatrix4fv(glGetUniformLocation(m_Program, name), 1, GL_FALSE,
+                       glm::value_ptr(value));
 }
