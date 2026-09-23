@@ -49,6 +49,7 @@ add_library(imgui STATIC
     ${imgui_SOURCE_DIR}/imgui_draw.cpp
     ${imgui_SOURCE_DIR}/imgui_tables.cpp
     ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
 )
@@ -68,11 +69,15 @@ target_include_directories(stb_image PUBLIC external/stb)
 # --- Engine -----------------------------------------------------------------
 add_executable(MyEngine
     src/main.cpp
+    src/Assets/AssetLibrary.cpp
     src/Renderer/Camera.cpp
     src/Renderer/Mesh.cpp
     src/Renderer/Shader.cpp
     src/Renderer/Texture.cpp
+    src/Scene/Entity.cpp
+    src/Scene/Scene.cpp
     src/UI/ImGuiLayer.cpp
+    src/UI/SceneHierarchyPanel.cpp
 )
 
 target_include_directories(MyEngine PRIVATE src)

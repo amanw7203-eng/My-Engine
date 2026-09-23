@@ -116,6 +116,11 @@ void Shader::SetInt(const char* name, int value) const
     glUniform1i(glGetUniformLocation(m_Program, name), value);
 }
 
+void Shader::SetVec3(const char* name, const glm::vec3& value) const
+{
+    glUniform3fv(glGetUniformLocation(m_Program, name), 1, glm::value_ptr(value));
+}
+
 void Shader::SetMat4(const char* name, const glm::mat4& value) const
 {
     // GLM stores matrices column-major, same as OpenGL, so no transpose.

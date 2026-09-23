@@ -12,6 +12,11 @@ public:
     // If the file can't be loaded, the texture becomes a magenta/black
     // checkerboard so the problem is obvious on screen instead of silent.
     explicit Texture(const std::filesystem::path& path);
+
+    // Creates a texture from raw pixels: width * height * 4 bytes, RGBA,
+    // bottom row first.
+    Texture(const unsigned char* rgbaPixels, int width, int height);
+
     ~Texture();
 
     // One Texture owns one GL texture: copying would double-delete it.

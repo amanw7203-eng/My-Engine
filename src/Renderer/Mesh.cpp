@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <utility>
+#include <vector>
 
 Mesh::Mesh(std::span<const Vertex> vertices, std::span<const unsigned int> indices)
     : m_IndexCount(static_cast<GLsizei>(indices.size()))
@@ -105,6 +106,36 @@ Mesh Mesh::CreatePlane(float size, float uvRepeat)
         0, 1, 2,
         2, 3, 0,
     };
+
+    return Mesh(vertices, indices);
+}
+
+Mesh Mesh::CreateCube()
+{
+    // Corners of each face as seen from outside the cube, in the order
+    // bottom-left, bottom-right, top-right, top-left (counter-clockwise).
+    constexpr float h = 0.5f;
+    const glm::vec3 faces[6][4] = {
+        { { -h, -h,  h }, {  h, -h,  h }, {  h,  h,  h }, { -h,  h,  h } }, // +Z front
+        { {  h, -h, -h }, { -h, -h, -h }, { -h,  h, -h }, {  h,  h, -h } }, // -Z back
+        { {  h, -h,  h }, {  h, -h, -h }, {  h,  h, -h }, {  h,  h,  h } }, // +X right
+        { { -h, -h, -h }, { -h, -h,  h }, { -h,  h,  h }, { -h,  h, -h } }, // -X left
+        { { -h,  h,  h }, {  h,  h,  h }, {  h,  h, -h }, { -h,  h, -h } }, // +Y top
+        { { -h, -h, -h }, {  h, -h, -h }, {  h, -h,  h }, { -h, -h,  h } }, // -Y bottom
+    };
+    const glm::vec2 uvs[4] = { { 0.0f, 0.0f }, { 1.0f, 0.0f }, { 1.0f, 1.0f }, { 0.0f, 1.0f } };
+
+    std::vector<Vertex> vertices;
+    std::vector<unsigned int> indices;
+    for (const auto& face : faces)
+    {
+        const unsigned int base = static_cast<unsigned int>(vertices.size());
+        for (int corner = 0; corner < 4; ++corner)
+            vertices.push_back({ face[corner], glm::vec3(1.0f), uvs[corner] });
+
+        for (unsigned int i : { 0u, 1u, 2u, 2u, 3u, 0u })
+            indices.push_back(base + i);
+    }
 
     return Mesh(vertices, indices);
 }

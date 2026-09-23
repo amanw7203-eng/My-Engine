@@ -1,8 +1,11 @@
+#include "Assets/AssetLibrary.h"
 #include "Renderer/Camera.h"
 #include "Renderer/Mesh.h"
 #include "Renderer/Shader.h"
 #include "Renderer/Texture.h"
+#include "Scene/Scene.h"
 #include "UI/ImGuiLayer.h"
+#include "UI/SceneHierarchyPanel.h"
 
 #include <glad/gl.h>
 #include <SDL3/SDL.h>
@@ -82,22 +85,53 @@ int main(int /*argc*/, char* /*argv*/[])
         if (!shader.IsValid())
             exitCode = 1;
 
-        Mesh quad = Mesh::CreateQuad();
+        // --- Assets ---
+        AssetLibrary assets;
+        const Mesh* cubeMesh = assets.AddMesh("Cube", Mesh::CreateCube());
+        const Mesh* quadMesh = assets.AddMesh("Quad", Mesh::CreateQuad());
+        assets.AddMesh("Plane", Mesh::CreatePlane(1.0f, 1.0f));
         // 50x50 floor with the texture tiled 25 times each way (one tile per
         // 2 units), stretching into the distance to show off mipmapping.
-        Mesh floor = Mesh::CreatePlane(50.0f, 25.0f);
+        const Mesh* floorMesh = assets.AddMesh("Floor 50x50", Mesh::CreatePlane(50.0f, 25.0f));
+        const Texture* checker = assets.AddTexture("Checker", Texture(assetDir / "textures/checker.png"));
 
-        Texture checker(assetDir / "textures/checker.png");
+        // Used for entities with no texture: 1x1 white, so only the tint shows.
+        const unsigned char whitePixel[] = { 255, 255, 255, 255 };
+        const Texture whiteTexture(whitePixel, 1, 1);
 
-        Camera camera(glm::vec3(0.0f, 0.0f, 3.0f)); // 3 units back, facing the quad
+        // --- Starting scene ---
+        Scene scene;
+
+        Entity& floorEntity = scene.CreateEntity("Floor");
+        floorEntity.mesh = floorMesh;
+        floorEntity.texture = checker;
+        floorEntity.transform.position.y = -0.5f;
+
+        Entity& quadEntity = scene.CreateEntity("Quad");
+        quadEntity.mesh = quadMesh;
+        quadEntity.texture = checker;
+
+        Entity& cubeEntity = scene.CreateEntity("Cube");
+        cubeEntity.mesh = cubeMesh;
+        cubeEntity.texture = checker;
+        cubeEntity.tint = glm::vec3(1.0f, 0.65f, 0.35f);
+        cubeEntity.transform.position = glm::vec3(2.0f, 0.0f, 0.0f);
+
+        // A child of the cube: rotate or move the cube and this follows.
+        Entity& moonEntity = scene.CreateEntity("Moon", &cubeEntity);
+        moonEntity.mesh = cubeMesh;
+        moonEntity.tint = glm::vec3(0.6f, 0.8f, 1.0f);
+        moonEntity.transform.position = glm::vec3(1.2f, 0.6f, 0.0f);
+        moonEntity.transform.scale = glm::vec3(0.35f);
+
+        SceneHierarchyPanel hierarchyPanel;
+
+        // Back and a little to the right so the whole scene is in view.
+        Camera camera(glm::vec3(1.0f, 0.5f, 6.0f));
 
         // Settings the UI can edit.
         glm::vec3 clearColor(0.10f, 0.12f, 0.18f);
-        bool spinQuad = true;
-        float spinSpeed = 90.0f; // degrees per second
         bool showImGuiDemo = false;
-
-        float rotation = 0.0f; // radians
 
         // Mouse look is active while right mouse is held OR while locked on
         // with Left Alt.
@@ -155,6 +189,14 @@ int main(int /*argc*/, char* /*argv*/[])
             // --- UI ---
             ui.BeginFrame();
 
+            hierarchyPanel.Draw(scene, assets);
+
+            // Starts on the right so it doesn't overlap Hierarchy/Inspector.
+            const ImGuiViewport* viewport = ImGui::GetMainViewport();
+            const float fontSize = ImGui::GetFontSize();
+            ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - fontSize, viewport->WorkPos.y + fontSize),
+                                    ImGuiCond_FirstUseEver, ImVec2(1.0f, 0.0f));
+            ImGui::SetNextWindowSize(ImVec2(fontSize * 20, fontSize * 20), ImGuiCond_FirstUseEver);
             ImGui::Begin("Engine");
             const ImGuiIO& io = ImGui::GetIO();
             ImGui::Text("%.1f FPS (%.2f ms)", io.Framerate, 1000.0f / io.Framerate);
@@ -169,8 +211,6 @@ int main(int /*argc*/, char* /*argv*/[])
 
             ImGui::SeparatorText("Scene");
             ImGui::ColorEdit3("Background", &clearColor.x);
-            ImGui::Checkbox("Spin quad", &spinQuad);
-            ImGui::SliderFloat("Spin speed", &spinSpeed, -360.0f, 360.0f, "%.0f deg/s");
 
             ImGui::SeparatorText("Controls");
             ImGui::TextDisabled("WASD move, Q/E down/up, Shift sprint");
@@ -200,10 +240,6 @@ int main(int /*argc*/, char* /*argv*/[])
                 camera.Move(moveDirection, deltaTime);
             }
 
-            // Same speed at any frame rate.
-            if (spinQuad)
-                rotation += glm::radians(spinSpeed) * deltaTime;
-
             // --- Render ---
             int width = 0, height = 0;
             SDL_GetWindowSizeInPixels(window, &width, &height);
@@ -219,24 +255,17 @@ int main(int /*argc*/, char* /*argv*/[])
             shader.SetMat4("uView", camera.GetViewMatrix());
             shader.SetMat4("uProjection", camera.GetProjectionMatrix(aspect));
 
-            // The sampler reads texture unit 0, which the checker is bound to.
+            // The sampler reads texture unit 0; Scene binds each entity's
+            // texture there before drawing it.
             shader.SetInt("uTexture", 0);
-            checker.Bind(0);
-
-            // Floor just below the quad's bottom edge.
-            shader.SetMat4("uModel", glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -0.5f, 0.0f)));
-            floor.Draw();
-
-            shader.SetMat4("uModel",
-                glm::rotate(glm::mat4(1.0f), rotation, glm::vec3(0.0f, 1.0f, 0.0f)));
-            quad.Draw();
+            scene.Draw(shader, whiteTexture);
 
             // UI last, so it draws on top of the scene.
             ui.EndFrame();
 
             SDL_GL_SwapWindow(window);
         }
-    } // UI, shader, meshes and texture destroyed here, before the context
+    } // UI, scene, assets and shader destroyed here, before the context
 
     SDL_GL_DestroyContext(glContext);
     SDL_DestroyWindow(window);

@@ -35,6 +35,12 @@ Texture::Texture(const std::filesystem::path& path)
     Upload(fallback, 2, 2);
 }
 
+Texture::Texture(const unsigned char* rgbaPixels, int width, int height)
+{
+    Upload(rgbaPixels, width, height);
+    m_Loaded = true;
+}
+
 void Texture::Upload(const unsigned char* pixels, int width, int height)
 {
     m_Width = width;

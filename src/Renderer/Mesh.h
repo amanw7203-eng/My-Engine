@@ -40,6 +40,10 @@ public:
     // origin. The texture repeats uvRepeat times across each side.
     static Mesh CreatePlane(float size, float uvRepeat);
 
+    // A 1x1x1 cube centred on the origin. Each face has its own 4 vertices
+    // so it gets the full texture (a shared corner can't have 3 UVs).
+    static Mesh CreateCube();
+
 private:
     void Release();
 
