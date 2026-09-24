@@ -72,6 +72,7 @@ add_executable(MyEngine
     src/Assets/AssetLibrary.cpp
     src/Renderer/Camera.cpp
     src/Renderer/Mesh.cpp
+    src/Renderer/ObjectPicker.cpp
     src/Renderer/Shader.cpp
     src/Renderer/ShadowMap.cpp
     src/Renderer/Texture.cpp

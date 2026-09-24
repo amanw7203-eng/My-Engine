@@ -15,3 +15,13 @@ bool Entity::IsAncestorOf(const Entity& other) const
     }
     return false;
 }
+
+bool Entity::IsVisibleInHierarchy() const
+{
+    for (const Entity* e = this; e; e = e->m_Parent)
+    {
+        if (!e->visible)
+            return false;
+    }
+    return true;
+}

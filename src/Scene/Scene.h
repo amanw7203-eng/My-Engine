@@ -32,11 +32,16 @@ public:
     // Draws every visible entity that has a mesh. The shader must already be
     // bound with its view/projection set. Entities without a texture use
     // `defaultTexture`.
-    void Draw(const Shader& shader, const Texture& defaultTexture) const;
+    //
+    // For picking, pass `drawnEntities`: each drawn entity is appended to it,
+    // and its 1-based position in the list is sent as the uEntityId uniform,
+    // so an ID read back from the picker is drawnEntities[id - 1].
+    void Draw(const Shader& shader, const Texture& defaultTexture,
+              std::vector<Entity*>* drawnEntities = nullptr) const;
 
 private:
-    void DrawEntity(const Entity& entity, const glm::mat4& parentWorld,
-                    const Shader& shader, const Texture& defaultTexture) const;
+    void DrawEntity(Entity& entity, const glm::mat4& parentWorld, const Shader& shader,
+                    const Texture& defaultTexture, std::vector<Entity*>* drawnEntities) const;
 
     // Removes the entity from its parent's (or the root) child list.
     void Detach(Entity& entity);

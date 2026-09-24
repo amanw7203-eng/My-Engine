@@ -1,6 +1,7 @@
 #include "Assets/AssetLibrary.h"
 #include "Renderer/Camera.h"
 #include "Renderer/Mesh.h"
+#include "Renderer/ObjectPicker.h"
 #include "Renderer/Shader.h"
 #include "Renderer/ShadowMap.h"
 #include "Renderer/Texture.h"
@@ -19,6 +20,8 @@
 #include <cmath>
 #include <filesystem>
 #include <iostream>
+#include <optional>
+#include <vector>
 
 int main(int /*argc*/, char* /*argv*/[])
 {
@@ -34,6 +37,7 @@ int main(int /*argc*/, char* /*argv*/[])
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24); // depth buffer for 3D
+    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8); // masks the selection outline
 
     SDL_Window* window = SDL_CreateWindow("MyEngine", 1280, 720,
                                           SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
@@ -69,6 +73,13 @@ int main(int /*argc*/, char* /*argv*/[])
     // Only draw a pixel if it is closer to the camera than what is already there.
     glEnable(GL_DEPTH_TEST);
 
+    // Backface culling: skip triangles facing away from the camera (the far
+    // side of a closed mesh can't be seen anyway). "Front" is
+    // counter-clockwise as seen from outside, how all our meshes are wound.
+    // Turned on or off each frame from the Scene settings.
+    glCullFace(GL_BACK);
+    glFrontFace(GL_CCW);
+
     std::cout << "OpenGL " << glGetString(GL_VERSION) << '\n';
 
     // Assets are copied next to the executable by the build, so look them up
@@ -87,10 +98,15 @@ int main(int /*argc*/, char* /*argv*/[])
         Shader shader(assetDir / "shaders/lit.vert", assetDir / "shaders/lit.frag");
         // Draws the scene from the sun's point of view, recording only depth.
         Shader depthShader(assetDir / "shaders/shadow_depth.vert", assetDir / "shaders/shadow_depth.frag");
-        if (!shader.IsValid() || !depthShader.IsValid())
+        // Position-only passes: a solid color (selection outline), and entity
+        // IDs for clicking objects in the 3D view.
+        Shader flatShader(assetDir / "shaders/flat.vert", assetDir / "shaders/flat.frag");
+        Shader pickShader(assetDir / "shaders/flat.vert", assetDir / "shaders/pick.frag");
+        if (!shader.IsValid() || !depthShader.IsValid() || !flatShader.IsValid() || !pickShader.IsValid())
             exitCode = 1;
 
         ShadowMap shadowMap(2048);
+        ObjectPicker picker;
 
         // --- Assets ---
         AssetLibrary assets;
@@ -118,6 +134,7 @@ int main(int /*argc*/, char* /*argv*/[])
         Entity& quadEntity = scene.CreateEntity("Quad");
         quadEntity.mesh = quadMesh;
         quadEntity.texture = checker;
+        quadEntity.doubleSided = true; // a lone flat quad, seen from both sides
 
         Entity& cubeEntity = scene.CreateEntity("Cube");
         cubeEntity.mesh = cubeMesh;
@@ -140,6 +157,7 @@ int main(int /*argc*/, char* /*argv*/[])
         // Settings the UI can edit.
         glm::vec3 clearColor(0.10f, 0.12f, 0.18f);
         bool showImGuiDemo = false;
+        bool backfaceCulling = true;
 
         // A single directional "sun" light. Its direction is given as two
         // angles: azimuth spins it around the vertical axis, elevation is how
@@ -160,6 +178,10 @@ int main(int /*argc*/, char* /*argv*/[])
         // with Left Alt.
         bool rightMouseHeld = false;
         bool mouseLookLocked = false;
+
+        // Where the 3D view was left-clicked this frame (window coordinates),
+        // to select whatever is under it once the frame is being rendered.
+        std::optional<glm::vec2> pendingPick;
 
         // Engine settings, in a Blender-style sidebar on the right edge of
         // the 3D view: one tab per group.
@@ -197,6 +219,7 @@ int main(int /*argc*/, char* /*argv*/[])
                 const ImGuiIO& io = ImGui::GetIO();
                 ImGui::Text("%.1f FPS (%.2f ms)", io.Framerate, 1000.0f / io.Framerate);
                 ImGui::ColorEdit3("Background", &clearColor.x);
+                ImGui::Checkbox("Backface culling", &backfaceCulling);
             } },
             { "Help", [&] {
                 ImGui::TextDisabled("WASD move, Q/E down/up, Shift sprint");
@@ -243,6 +266,11 @@ int main(int /*argc*/, char* /*argv*/[])
                     rightMouseHeld = true;
                 else if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && event.button.button == SDL_BUTTON_RIGHT)
                     rightMouseHeld = false;
+                // Left-clicking the 3D view (not a panel, not while looking
+                // around) selects the object under the cursor.
+                else if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button == SDL_BUTTON_LEFT
+                         && !ui.WantsMouse() && !SDL_GetWindowRelativeMouseMode(window))
+                    pendingPick = glm::vec2(event.button.x, event.button.y);
                 else if (event.type == SDL_EVENT_MOUSE_MOTION && SDL_GetWindowRelativeMouseMode(window))
                     camera.Rotate(event.motion.xrel, event.motion.yrel);
             }
@@ -301,6 +329,13 @@ int main(int /*argc*/, char* /*argv*/[])
                                   std::cos(elevation) * std::cos(azimuth));
             const glm::vec3 lightDir = -toSun;
 
+            // Applies to both passes. (ImGui turns culling off while drawing
+            // the UI and restores it afterwards.)
+            if (backfaceCulling)
+                glEnable(GL_CULL_FACE);
+            else
+                glDisable(GL_CULL_FACE);
+
             // Pass 1: shadow map. Draw the scene from the sun, keeping only
             // how far each surface is from it. The depth shader ignores the
             // material uniforms Scene::Draw sets.
@@ -315,14 +350,41 @@ int main(int /*argc*/, char* /*argv*/[])
                 shadowMap.EndRender();
             }
 
+            const glm::mat4 view = camera.GetViewMatrix();
+            const glm::mat4 projection = camera.GetProjectionMatrix(aspect);
+
+            // Click to select: draw just the clicked pixel with each entity
+            // writing its ID, and select whichever one ends up there (or
+            // nothing, which deselects).
+            if (pendingPick && width > 0 && height > 0)
+            {
+                // SDL reports the mouse in window coordinates, which differ
+                // from framebuffer pixels on high-DPI displays.
+                int windowWidth = 0, windowHeight = 0;
+                SDL_GetWindowSize(window, &windowWidth, &windowHeight);
+                const glm::vec2 viewSize(width, height);
+                const glm::vec2 pixel = *pendingPick * viewSize / glm::vec2(windowWidth, windowHeight);
+
+                std::vector<Entity*> drawnEntities;
+                picker.BeginRender();
+                pickShader.Bind();
+                pickShader.SetMat4("uView", view);
+                pickShader.SetMat4("uProjection", ObjectPicker::GetPickMatrix(pixel, viewSize) * projection);
+                scene.Draw(pickShader, whiteTexture, &drawnEntities);
+                const std::uint32_t id = picker.EndRender();
+
+                hierarchyPanel.SetSelected(id > 0 && id <= drawnEntities.size() ? drawnEntities[id - 1] : nullptr);
+                pendingPick.reset();
+            }
+
             // Pass 2: the lit scene, as seen by the camera.
             glViewport(0, 0, width, height);
             glClearColor(clearColor.r, clearColor.g, clearColor.b, 1.0f);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
             shader.Bind();
-            shader.SetMat4("uView", camera.GetViewMatrix());
-            shader.SetMat4("uProjection", camera.GetProjectionMatrix(aspect));
+            shader.SetMat4("uView", view);
+            shader.SetMat4("uProjection", projection);
             shader.SetVec3("uViewPos", camera.GetPosition());
             shader.SetVec3("uLightDir", lightDir);
             shader.SetVec3("uLightColor", lightColor);
@@ -341,6 +403,46 @@ int main(int /*argc*/, char* /*argv*/[])
             shader.SetInt("uShadowMap", 1);
             shadowMap.BindTexture(1);
             scene.Draw(shader, whiteTexture);
+
+            // Selection outline: an orange border around the selected
+            // object's silhouette, visible even through things in front.
+            const Entity* selected = hierarchyPanel.GetSelected();
+            if (selected && selected->mesh && selected->IsVisibleInHierarchy())
+            {
+                flatShader.Bind();
+                flatShader.SetMat4("uView", view);
+                flatShader.SetMat4("uProjection", projection);
+                flatShader.SetMat4("uModel", selected->GetWorldMatrix());
+                flatShader.SetVec3("uColor", glm::vec3(1.0f, 0.55f, 0.1f));
+
+                glDisable(GL_DEPTH_TEST);
+                glDisable(GL_CULL_FACE); // the whole silhouette, all sides
+                glEnable(GL_STENCIL_TEST);
+
+                // 1) Mark the object's silhouette in the stencil buffer,
+                //    without drawing any color.
+                glStencilFunc(GL_ALWAYS, 1, 0xFF);
+                glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+                glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+                selected->mesh->Draw();
+                glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+                // 2) Draw its edges as thick lines, but only outside the
+                //    silhouette: what's left is an outline around it.
+                glStencilFunc(GL_NOTEQUAL, 1, 0xFF);
+                glStencilMask(0x00);
+                glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                glLineWidth(4.0f);
+                selected->mesh->Draw();
+
+                glLineWidth(1.0f);
+                glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                glStencilMask(0xFF);
+                glDisable(GL_STENCIL_TEST);
+                glEnable(GL_DEPTH_TEST);
+                if (backfaceCulling)
+                    glEnable(GL_CULL_FACE);
+            }
 
             // UI last, so it draws on top of the scene.
             ui.EndFrame();

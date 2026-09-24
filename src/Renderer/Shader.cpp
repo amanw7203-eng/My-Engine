@@ -116,6 +116,11 @@ void Shader::SetInt(const char* name, int value) const
     glUniform1i(glGetUniformLocation(m_Program, name), value);
 }
 
+void Shader::SetUInt(const char* name, unsigned int value) const
+{
+    glUniform1ui(glGetUniformLocation(m_Program, name), value);
+}
+
 void Shader::SetFloat(const char* name, float value) const
 {
     glUniform1f(glGetUniformLocation(m_Program, name), value);

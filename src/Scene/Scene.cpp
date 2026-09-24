@@ -4,6 +4,8 @@
 #include "Renderer/Shader.h"
 #include "Renderer/Texture.h"
 
+#include <glad/gl.h>
+
 Entity& Scene::CreateEntity(std::string name, Entity* parent)
 {
     Entity& entity = *m_Entities.emplace_back(std::make_unique<Entity>(std::move(name)));
@@ -35,14 +37,15 @@ bool Scene::SetParent(Entity& entity, Entity* newParent)
     return true;
 }
 
-void Scene::Draw(const Shader& shader, const Texture& defaultTexture) const
+void Scene::Draw(const Shader& shader, const Texture& defaultTexture,
+                 std::vector<Entity*>* drawnEntities) const
 {
-    for (const Entity* root : m_Roots)
-        DrawEntity(*root, glm::mat4(1.0f), shader, defaultTexture);
+    for (Entity* root : m_Roots)
+        DrawEntity(*root, glm::mat4(1.0f), shader, defaultTexture, drawnEntities);
 }
 
-void Scene::DrawEntity(const Entity& entity, const glm::mat4& parentWorld,
-                       const Shader& shader, const Texture& defaultTexture) const
+void Scene::DrawEntity(Entity& entity, const glm::mat4& parentWorld, const Shader& shader,
+                       const Texture& defaultTexture, std::vector<Entity*>* drawnEntities) const
 {
     if (!entity.visible)
         return; // hides the whole subtree
@@ -61,11 +64,33 @@ void Scene::DrawEntity(const Entity& entity, const glm::mat4& parentWorld,
         shader.SetFloat("uSpecularStrength", entity.specularStrength);
         shader.SetFloat("uShininess", entity.shininess);
         (entity.texture ? *entity.texture : defaultTexture).Bind(0);
+        if (drawnEntities)
+        {
+            drawnEntities->push_back(&entity);
+            shader.SetUInt("uEntityId", static_cast<unsigned int>(drawnEntities->size()));
+        }
+
+        // A negative scale mirrors the mesh, which flips its triangles'
+        // winding, so the side that counts as "front" must flip with it or
+        // culling would hide the outside and show the inside.
+        const bool mirrored = glm::determinant(glm::mat3(world)) < 0.0f;
+        if (mirrored)
+            glFrontFace(GL_CW);
+        // Double-sided entities skip culling so their back is visible too.
+        const bool pauseCulling = entity.doubleSided && glIsEnabled(GL_CULL_FACE);
+        if (pauseCulling)
+            glDisable(GL_CULL_FACE);
+
         entity.mesh->Draw();
+
+        if (pauseCulling)
+            glEnable(GL_CULL_FACE);
+        if (mirrored)
+            glFrontFace(GL_CCW);
     }
 
-    for (const Entity* child : entity.m_Children)
-        DrawEntity(*child, world, shader, defaultTexture);
+    for (Entity* child : entity.m_Children)
+        DrawEntity(*child, world, shader, defaultTexture, drawnEntities);
 }
 
 void Scene::Detach(Entity& entity)

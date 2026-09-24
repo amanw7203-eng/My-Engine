@@ -25,6 +25,7 @@ public:
     glm::vec3 tint{ 1.0f };           // multiplied with the texture
     float specularStrength = 0.5f;    // 0 = matte, 1 = full-strength highlight
     float shininess = 32.0f;          // higher = smaller, sharper highlight
+    bool doubleSided = false;         // draw back faces too (for flat quads/planes)
     bool visible = true;              // false also hides all children
 
     Entity* GetParent() const { return m_Parent; }
@@ -36,6 +37,9 @@ public:
 
     // True if `other` is a child, grandchild, ... of this entity.
     bool IsAncestorOf(const Entity& other) const;
+
+    // False if this entity or any parent is hidden, i.e. it isn't drawn.
+    bool IsVisibleInHierarchy() const;
 
 private:
     friend class Scene; // keeps parent/child links consistent

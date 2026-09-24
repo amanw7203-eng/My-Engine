@@ -197,6 +197,7 @@ void SceneHierarchyPanel::DrawInspector(const AssetLibrary& assets)
     ImGui::ColorEdit3("Tint", &entity.tint.x);
     ImGui::SliderFloat("Specular", &entity.specularStrength, 0.0f, 1.0f);
     ImGui::SliderFloat("Shininess", &entity.shininess, 1.0f, 256.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+    ImGui::Checkbox("Double sided", &entity.doubleSided);
 
     ImGui::End();
 }

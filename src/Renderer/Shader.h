@@ -30,6 +30,7 @@ public:
 
     // Uniform setters. The shader must be bound first.
     void SetInt(const char* name, int value) const;
+    void SetUInt(const char* name, unsigned int value) const;
     void SetFloat(const char* name, float value) const;
     void SetVec3(const char* name, const glm::vec3& value) const;
     void SetMat3(const char* name, const glm::mat3& value) const;

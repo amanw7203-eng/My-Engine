@@ -18,6 +18,8 @@ public:
     void Draw(Scene& scene, const AssetLibrary& assets);
 
     Entity* GetSelected() const { return m_Selected; }
+    // e.g. from clicking the entity in the 3D view; nullptr deselects.
+    void SetSelected(Entity* entity) { m_Selected = entity; }
 
 private:
     void DrawHierarchy(Scene& scene, const AssetLibrary& assets);
