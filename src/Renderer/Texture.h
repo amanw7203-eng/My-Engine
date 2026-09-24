@@ -9,6 +9,17 @@
 class Texture
 {
 public:
+    // How the pixel values should be read, as in Blender's image "Color
+    // Space" setting:
+    //   Srgb     - a picture/color (base color, emission); stored
+    //              gamma-encoded, so the shader converts it to linear light.
+    //   NonColor - data (normal, roughness, metallic, AO maps); used as-is.
+    enum class ColorSpace
+    {
+        Srgb,
+        NonColor,
+    };
+
     // If the file can't be loaded, the texture becomes a magenta/black
     // checkerboard so the problem is obvious on screen instead of silent.
     explicit Texture(const std::filesystem::path& path);
@@ -34,10 +45,19 @@ public:
     bool IsLoaded() const { return m_Loaded; }
     int GetWidth() const { return m_Width; }
     int GetHeight() const { return m_Height; }
+    GLuint GetId() const { return m_Texture; } // e.g. for ImGui::Image previews
+
+    // The file it was loaded from; empty for textures made from raw pixels.
+    const std::filesystem::path& GetPath() const { return m_Path; }
+
+    // Only changes how shaders interpret the pixels, so it can be switched
+    // at any time without reloading.
+    ColorSpace colorSpace = ColorSpace::Srgb;
 
 private:
     void Upload(const unsigned char* pixels, int width, int height);
 
+    std::filesystem::path m_Path;
     GLuint m_Texture = 0;
     int m_Width = 0;
     int m_Height = 0;

@@ -1,4 +1,4 @@
-#version 330 core
+#version 460 core
 
 // Writes which entity covers this pixel as a plain integer, so the engine
 // can read back what was clicked. 0 means nothing.

@@ -1,21 +1,45 @@
-#version 330 core
+#version 460 core
 in vec3 vWorldPos;
 in vec3 vNormal;
 in vec3 vColor;
 in vec2 vTexCoord;
 
-// Which texture unit to read from; set with shader.SetInt("uTexture", slot).
-uniform sampler2D uTexture;
-// Per-object color multiplier; white leaves the texture unchanged.
-uniform vec3 uTint;
+// --- Material (see Material.h) ---
+// Each input is a value times a texture; empty slots get a white texture,
+// which leaves the value unchanged. The *Srgb flags say whether that texture
+// is marked as a color image (decode from sRGB) or as Non-Color data.
+uniform vec3 uBaseColor;        // linear
+uniform sampler2D uBaseColorMap;
+uniform bool uBaseColorMapSrgb;
 
-// Per-object material: how strong the highlight is, and how tight
-// (higher shininess = smaller, sharper highlight).
-uniform float uSpecularStrength;
-uniform float uShininess;
+uniform float uMetallic;
+uniform sampler2D uMetallicMap; // blue channel
+uniform bool uMetallicMapSrgb;
 
+uniform float uRoughness;
+uniform sampler2D uRoughnessMap; // green channel
+uniform bool uRoughnessMapSrgb;
+
+uniform bool uHasNormalMap;
+uniform sampler2D uNormalMap;
+uniform bool uNormalMapSrgb;
+uniform float uNormalStrength;
+
+uniform sampler2D uAoMap;       // red channel
+uniform bool uAoMapSrgb;
+uniform float uAoStrength;
+
+uniform vec3 uEmission;         // linear color * strength
+uniform sampler2D uEmissionMap;
+uniform bool uEmissionMapSrgb;
+
+uniform vec2 uUvTiling;
+uniform vec2 uUvOffset;
+
+// --- Lights ---
 // One directional light (like the sun): every surface sees it coming from
 // the same direction. uLightDir points from the light towards the scene.
+// Colors are linear.
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
 uniform vec3 uAmbientColor;
@@ -38,6 +62,44 @@ uniform float uShadowNormalOffset;
 uniform float uShadowDistance;
 
 out vec4 FragColor;
+
+// The exact sRGB curve, both ways.
+vec3 SrgbToLinear(vec3 c)
+{
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+
+vec3 LinearToSrgb(vec3 c)
+{
+    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+
+vec3 SampleMap(sampler2D map, bool srgb, vec2 uv)
+{
+    vec3 c = texture(map, uv).rgb;
+    return srgb ? SrgbToLinear(c) : c;
+}
+
+// Builds a tangent frame (tangent, bitangent, normal) for normal mapping
+// from how the position and UVs change across neighbouring pixels, so the
+// meshes don't need to store tangents. (Christian Schüler, "Normal Mapping
+// Without Precomputed Tangents".)
+mat3 CotangentFrame(vec3 N, vec3 p, vec2 uv)
+{
+    vec3 dp1 = dFdx(p);
+    vec3 dp2 = dFdy(p);
+    vec2 duv1 = dFdx(uv);
+    vec2 duv2 = dFdy(uv);
+
+    vec3 dp2perp = cross(dp2, N);
+    vec3 dp1perp = cross(N, dp1);
+    vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+    vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+
+    // Scale-invariant: normalize by the larger of the two lengths.
+    float invMax = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-20));
+    return mat3(T * invMax, B * invMax, N);
+}
 
 // 1.0 = fully lit, 0.0 = fully in shadow.
 float ShadowFactor(vec3 N, float NdotL)
@@ -77,31 +139,60 @@ float ShadowFactor(vec3 N, float NdotL)
 
 void main()
 {
-    vec3 albedo = texture(uTexture, vTexCoord).rgb * vColor * uTint;
+    vec2 uv = vTexCoord * uUvTiling + uUvOffset;
+
+    // --- Material inputs ---
+    vec3 baseColor = uBaseColor * vColor * SampleMap(uBaseColorMap, uBaseColorMapSrgb, uv);
+    float metallic = clamp(uMetallic * SampleMap(uMetallicMap, uMetallicMapSrgb, uv).b, 0.0, 1.0);
+    float roughness = clamp(uRoughness * SampleMap(uRoughnessMap, uRoughnessMapSrgb, uv).g, 0.0, 1.0);
+    float ao = mix(1.0, SampleMap(uAoMap, uAoMapSrgb, uv).r, uAoStrength);
+    vec3 emission = uEmission * SampleMap(uEmissionMap, uEmissionMapSrgb, uv);
 
     // Interpolation shortens normals between vertices, so re-normalize.
     // Back faces (e.g. the far side of a quad) flip the normal to face us.
-    vec3 N = normalize(vNormal);
+    vec3 geometricN = normalize(vNormal);
     if (!gl_FrontFacing)
-        N = -N;
+        geometricN = -geometricN;
+
+    vec3 N = geometricN;
+    if (uHasNormalMap)
+    {
+        // Stored as 0..1 per channel; unpack to a -1..1 direction in the
+        // surface's tangent frame. Strength scales the sideways tilt.
+        vec3 tangentN = SampleMap(uNormalMap, uNormalMapSrgb, uv) * 2.0 - 1.0;
+        tangentN.xy *= uNormalStrength;
+        N = normalize(CotangentFrame(geometricN, vWorldPos, uv) * tangentN);
+    }
+
     vec3 L = normalize(-uLightDir);             // surface -> light
     vec3 V = normalize(uViewPos - vWorldPos);   // surface -> camera
     vec3 H = normalize(L + V);                  // halfway vector (Blinn)
-
-    // Ambient: a flat fill so faces turned away from the light aren't black.
-    vec3 ambient = uAmbientColor * albedo;
-
-    // Diffuse (Lambert): brightest when the surface faces the light.
     float NdotL = max(dot(N, L), 0.0);
-    vec3 diffuse = NdotL * uLightColor * albedo;
 
-    // Specular (Blinn-Phong): brightest when the halfway vector lines up with
-    // the normal. Skipped on surfaces facing away so highlights don't leak.
-    float spec = NdotL > 0.0 ? pow(max(dot(N, H), 0.0), uShininess) : 0.0;
-    vec3 specular = uSpecularStrength * spec * uLightColor;
+    // --- Shading (Blinn-Phong driven by the PBR inputs, until PBR lands) ---
+    // Metals have no diffuse color; their reflections are tinted by the base
+    // color instead. Non-metals reflect about 4% at head-on angles.
+    vec3 diffuseColor = baseColor * (1.0 - metallic);
+    vec3 specularColor = mix(vec3(0.04), baseColor, metallic);
 
-    // Shadow blocks the direct light only; ambient still fills it in.
-    float shadow = NdotL > 0.0 ? ShadowFactor(N, NdotL) : 1.0;
+    // Rougher = wider, dimmer highlight. The (n + 8) / 8 factor keeps the
+    // total reflected light about the same as the highlight spreads out.
+    float alpha = max(roughness * roughness, 0.002);
+    float shininess = min(2.0 / (alpha * alpha) - 2.0, 4096.0);
+    float spec = pow(max(dot(N, H), 0.0), shininess) * (shininess + 8.0) / 8.0;
 
-    FragColor = vec4(ambient + shadow * (diffuse + specular), 1.0);
+    vec3 direct = (diffuseColor + specularColor * spec) * uLightColor * NdotL;
+
+    // Shadow blocks the direct light only; ambient still fills it in. The
+    // shadow lookup uses the real surface, not the normal-mapped one.
+    float shadow = NdotL > 0.0 ? ShadowFactor(geometricN, max(dot(geometricN, L), 0.0)) : 1.0;
+
+    // Ambient: a flat fill so faces turned away from the light aren't black,
+    // darkened in crevices by the AO map.
+    vec3 ambient = uAmbientColor * (diffuseColor + specularColor) * ao;
+
+    vec3 color = ambient + shadow * direct + emission;
+
+    // Lighting is computed in linear light; the screen expects sRGB.
+    FragColor = vec4(LinearToSrgb(max(color, 0.0)), 1.0);
 }

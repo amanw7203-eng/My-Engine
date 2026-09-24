@@ -6,6 +6,8 @@
 #include "Renderer/ShadowMap.h"
 #include "Renderer/Texture.h"
 #include "Scene/Scene.h"
+#include "Renderer/ColorSpace.h"
+#include "UI/AssetsPanel.h"
 #include "UI/ImGuiLayer.h"
 #include "UI/SceneHierarchyPanel.h"
 #include "UI/SideDrawer.h"
@@ -31,10 +33,16 @@ int main(int /*argc*/, char* /*argv*/[])
         return 1;
     }
 
-    // Request an OpenGL 3.3 core context.
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    // Request an OpenGL 4.6 core context: 4.3+ adds compute shaders and
+    // shader storage buffers (needed for the path tracer) and debug output.
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 6);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+#ifndef NDEBUG
+    // Debug builds get a debug context, so the driver reports GL errors and
+    // warnings to the callback installed below.
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_DEBUG_FLAG);
+#endif
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24); // depth buffer for 3D
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8); // masks the selection outline
@@ -57,16 +65,36 @@ int main(int /*argc*/, char* /*argv*/[])
         return 1;
     }
 
-    // Load all OpenGL 3.3 functions from the driver. Must happen after the
-    // context exists and before any other gl* call.
-    if (!gladLoadGL(reinterpret_cast<GLADloadfunc>(SDL_GL_GetProcAddress)))
+    // Load all OpenGL 4.6 functions from the driver. Must happen after the
+    // context exists and before any other gl* call. Returns the version the
+    // driver actually provides (0 on failure).
+    const int glVersion = gladLoadGL(reinterpret_cast<GLADloadfunc>(SDL_GL_GetProcAddress));
+    if (!glVersion || !GLAD_GL_VERSION_4_6)
     {
-        std::cerr << "Failed to load OpenGL functions\n";
+        std::cerr << "OpenGL 4.6 is required, but the driver provides "
+                  << GLAD_VERSION_MAJOR(glVersion) << '.' << GLAD_VERSION_MINOR(glVersion) << '\n';
         SDL_GL_DestroyContext(glContext);
         SDL_DestroyWindow(window);
         SDL_Quit();
         return 1;
     }
+
+#ifndef NDEBUG
+    // Print driver-reported problems as they happen, instead of having to
+    // call glGetError after everything. Synchronous output makes the message
+    // arrive inside the gl* call that caused it, so a breakpoint here shows
+    // the culprit on the call stack.
+    glEnable(GL_DEBUG_OUTPUT);
+    glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
+    glDebugMessageCallback([](GLenum /*source*/, GLenum type, GLuint id, GLenum severity, GLsizei /*length*/,
+                              const GLchar* message, const void* /*userParam*/) {
+        // Notifications are chatty info (e.g. "buffer will use video memory").
+        if (severity == GL_DEBUG_SEVERITY_NOTIFICATION)
+            return;
+        std::cerr << "[GL " << (type == GL_DEBUG_TYPE_ERROR ? "error" : "warning") << ' ' << id << "] "
+                  << message << '\n';
+    }, nullptr);
+#endif
 
     SDL_GL_SetSwapInterval(1); // vsync
 
@@ -116,40 +144,67 @@ int main(int /*argc*/, char* /*argv*/[])
         // 50x50 floor with the texture tiled 25 times each way (one tile per
         // 2 units), stretching into the distance to show off mipmapping.
         const Mesh* floorMesh = assets.AddMesh("Floor 50x50", Mesh::CreatePlane(50.0f, 25.0f));
-        const Texture* checker = assets.AddTexture("Checker", Texture(assetDir / "textures/checker.png"));
 
-        // Used for entities with no texture: 1x1 white, so only the tint shows.
+        // Every image in assets/textures. More can be imported from the
+        // Assets panel or dropped onto the window.
+        const std::filesystem::path textureFolder = assetDir / "textures";
+        assets.ImportFolder(textureFolder);
+        const Texture* checker = assets.ImportTexture(textureFolder / "checker.png");
+
+        // Fills empty material texture slots: white leaves values unchanged.
         const unsigned char whitePixel[] = { 255, 255, 255, 255 };
         const Texture whiteTexture(whitePixel, 1, 1);
+
+        // Used by entities with no material.
+        Material defaultMaterial;
+        defaultMaterial.name = "Default";
+
+        // --- Starting materials ---
+        Material* floorMaterial = assets.CreateMaterial("Floor");
+        floorMaterial->baseColor = glm::vec3(1.0f);
+        floorMaterial->baseColorMap = checker;
+        floorMaterial->roughness = 0.8f; // mostly matte
+
+        Material* checkerMaterial = assets.CreateMaterial("Checker");
+        checkerMaterial->baseColor = glm::vec3(1.0f);
+        checkerMaterial->baseColorMap = checker;
+        checkerMaterial->doubleSided = true; // for the lone flat quad, seen from both sides
+
+        Material* orangeMaterial = assets.CreateMaterial("Orange Checker");
+        orangeMaterial->baseColor = glm::vec3(1.0f, 0.65f, 0.35f);
+        orangeMaterial->baseColorMap = checker;
+        orangeMaterial->roughness = 0.35f;
+
+        Material* moonMaterial = assets.CreateMaterial("Moon");
+        moonMaterial->baseColor = glm::vec3(0.6f, 0.8f, 1.0f);
+        moonMaterial->roughness = 0.3f;
 
         // --- Starting scene ---
         Scene scene;
 
         Entity& floorEntity = scene.CreateEntity("Floor");
         floorEntity.mesh = floorMesh;
-        floorEntity.texture = checker;
+        floorEntity.material = floorMaterial;
         floorEntity.transform.position.y = -0.5f;
-        floorEntity.specularStrength = 0.15f; // mostly matte
 
         Entity& quadEntity = scene.CreateEntity("Quad");
         quadEntity.mesh = quadMesh;
-        quadEntity.texture = checker;
-        quadEntity.doubleSided = true; // a lone flat quad, seen from both sides
+        quadEntity.material = checkerMaterial;
 
         Entity& cubeEntity = scene.CreateEntity("Cube");
         cubeEntity.mesh = cubeMesh;
-        cubeEntity.texture = checker;
-        cubeEntity.tint = glm::vec3(1.0f, 0.65f, 0.35f);
+        cubeEntity.material = orangeMaterial;
         cubeEntity.transform.position = glm::vec3(2.0f, 0.0f, 0.0f);
 
         // A child of the cube: rotate or move the cube and this follows.
         Entity& moonEntity = scene.CreateEntity("Moon", &cubeEntity);
         moonEntity.mesh = cubeMesh;
-        moonEntity.tint = glm::vec3(0.6f, 0.8f, 1.0f);
+        moonEntity.material = moonMaterial;
         moonEntity.transform.position = glm::vec3(1.2f, 0.6f, 0.0f);
         moonEntity.transform.scale = glm::vec3(0.35f);
 
         SceneHierarchyPanel hierarchyPanel;
+        AssetsPanel assetsPanel(window, textureFolder);
 
         // Back and a little to the right so the whole scene is in view.
         Camera camera(glm::vec3(1.0f, 0.5f, 6.0f));
@@ -253,6 +308,10 @@ int main(int /*argc*/, char* /*argv*/[])
 
                 if (event.type == SDL_EVENT_QUIT)
                     running = false;
+                // Image files (or folders) dragged from Explorer onto the
+                // window are imported as textures. SDL gives UTF-8 paths.
+                else if (event.type == SDL_EVENT_DROP_FILE && event.drop.data)
+                    assets.QueueImport(std::filesystem::path(reinterpret_cast<const char8_t*>(event.drop.data)));
                 else if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE && !ui.WantsKeyboard())
                     running = false;
                 // Left Alt toggles mouse look on/off (ignoring key repeat, so
@@ -289,7 +348,11 @@ int main(int /*argc*/, char* /*argv*/[])
             // --- UI ---
             ui.BeginFrame();
 
+            // Load images picked in the file dialog or dropped on the window.
+            assets.ProcessQueuedImports();
+
             hierarchyPanel.Draw(scene, assets);
+            assetsPanel.Draw(assets, scene, hierarchyPanel.GetSelected());
             settingsDrawer.Draw(ui.GetViewportMin(), ui.GetViewportMax(), settingsTabs);
 
             if (showImGuiDemo)
@@ -346,7 +409,7 @@ int main(int /*argc*/, char* /*argv*/[])
                 shadowMap.BeginRender();
                 depthShader.Bind();
                 depthShader.SetMat4("uLightSpace", lightSpace);
-                scene.Draw(depthShader, whiteTexture);
+                scene.Draw(depthShader, defaultMaterial, whiteTexture);
                 shadowMap.EndRender();
             }
 
@@ -370,7 +433,7 @@ int main(int /*argc*/, char* /*argv*/[])
                 pickShader.Bind();
                 pickShader.SetMat4("uView", view);
                 pickShader.SetMat4("uProjection", ObjectPicker::GetPickMatrix(pixel, viewSize) * projection);
-                scene.Draw(pickShader, whiteTexture, &drawnEntities);
+                scene.Draw(pickShader, defaultMaterial, whiteTexture, &drawnEntities);
                 const std::uint32_t id = picker.EndRender();
 
                 hierarchyPanel.SetSelected(id > 0 && id <= drawnEntities.size() ? drawnEntities[id - 1] : nullptr);
@@ -387,8 +450,9 @@ int main(int /*argc*/, char* /*argv*/[])
             shader.SetMat4("uProjection", projection);
             shader.SetVec3("uViewPos", camera.GetPosition());
             shader.SetVec3("uLightDir", lightDir);
-            shader.SetVec3("uLightColor", lightColor);
-            shader.SetVec3("uAmbientColor", ambientColor);
+            // The pickers show sRGB; the shader lights in linear space.
+            shader.SetVec3("uLightColor", SrgbToLinear(lightColor));
+            shader.SetVec3("uAmbientColor", SrgbToLinear(ambientColor));
 
             shader.SetInt("uShadowsEnabled", shadowsEnabled);
             shader.SetMat4("uLightSpace", lightSpace);
@@ -397,12 +461,12 @@ int main(int /*argc*/, char* /*argv*/[])
                             1.5f * 2.0f * shadowBounds.radius / shadowMap.GetResolution());
             shader.SetFloat("uShadowDistance", shadowDistance);
 
-            // Entity textures go in unit 0 (Scene binds each one before
-            // drawing it); the shadow map stays in unit 1 for the whole pass.
-            shader.SetInt("uTexture", 0);
+            // Material maps go in the units Scene binds them to per entity;
+            // the shadow map stays in unit 1 for the whole pass.
+            Scene::SetMaterialSamplers(shader);
             shader.SetInt("uShadowMap", 1);
             shadowMap.BindTexture(1);
-            scene.Draw(shader, whiteTexture);
+            scene.Draw(shader, defaultMaterial, whiteTexture);
 
             // Selection outline: an orange border around the selected
             // object's silhouette, visible even through things in front.

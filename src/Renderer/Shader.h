@@ -3,6 +3,7 @@
 #include <glad/gl.h>
 #include <glm/mat3x3.hpp>
 #include <glm/mat4x4.hpp>
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
 #include <filesystem>
@@ -32,6 +33,7 @@ public:
     void SetInt(const char* name, int value) const;
     void SetUInt(const char* name, unsigned int value) const;
     void SetFloat(const char* name, float value) const;
+    void SetVec2(const char* name, const glm::vec2& value) const;
     void SetVec3(const char* name, const glm::vec3& value) const;
     void SetMat3(const char* name, const glm::mat3& value) const;
     void SetMat4(const char* name, const glm::mat4& value) const;

@@ -10,12 +10,13 @@ class Scene;
 
 // Two editor panels sharing one selection:
 //   Hierarchy - the entity tree: select, create, delete, drag to re-parent
-//   Inspector - edit the selected entity's name, transform, mesh, texture...
+//   Inspector - edit the selected entity's name, transform, mesh, material...
 class SceneHierarchyPanel
 {
 public:
-    // Call between ImGuiLayer::BeginFrame and EndFrame.
-    void Draw(Scene& scene, const AssetLibrary& assets);
+    // Call between ImGuiLayer::BeginFrame and EndFrame. The library isn't
+    // const because the Inspector can create materials.
+    void Draw(Scene& scene, AssetLibrary& assets);
 
     Entity* GetSelected() const { return m_Selected; }
     // e.g. from clicking the entity in the 3D view; nullptr deselects.
@@ -25,7 +26,8 @@ private:
     void DrawHierarchy(Scene& scene, const AssetLibrary& assets);
     void DrawEntityNode(Scene& scene, const AssetLibrary& assets, Entity& entity);
     void DrawCreateMenuItems(Scene& scene, const AssetLibrary& assets, Entity* parent);
-    void DrawInspector(const AssetLibrary& assets);
+    void DrawInspector(const Scene& scene, AssetLibrary& assets);
+    void DrawMaterialSection(const Scene& scene, AssetLibrary& assets, Entity& entity);
 
     void QueueCreate(Scene& scene, const char* name, const Mesh* mesh, Entity* parent);
     void QueueDelete(Scene& scene, Entity& entity);

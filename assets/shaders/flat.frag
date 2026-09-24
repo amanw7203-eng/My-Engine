@@ -1,4 +1,4 @@
-#version 330 core
+#version 460 core
 
 // One solid color for the whole mesh (the selection outline).
 uniform vec3 uColor;

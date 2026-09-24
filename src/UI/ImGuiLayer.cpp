@@ -27,7 +27,7 @@ ImGuiLayer::ImGuiLayer(SDL_Window* window, SDL_GLContext glContext)
     }
 
     ImGui_ImplSDL3_InitForOpenGL(window, glContext);
-    ImGui_ImplOpenGL3_Init("#version 330 core");
+    ImGui_ImplOpenGL3_Init("#version 460 core");
 }
 
 ImGuiLayer::~ImGuiLayer()
@@ -54,16 +54,18 @@ void ImGuiLayer::BeginFrame()
                                                              ImGuiDockNodeFlags_PassthruCentralNode);
 
     // Default layout, only when imgui.ini has no saved one: Inspector on the
-    // left, Hierarchy on the right, 3D viewport in the middle.
+    // left, Hierarchy above Assets on the right, 3D viewport in the middle.
     ImGuiDockNode* dockspace = ImGui::DockBuilderGetNode(dockspaceId);
     if (dockspace && dockspace->IsLeafNode() && dockspace->Windows.empty())
     {
         ImGuiID centerId = dockspaceId;
         const ImGuiID leftId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Left, 0.22f, nullptr, &centerId);
-        const ImGuiID rightId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Right, 0.28f, nullptr, &centerId);
+        ImGuiID rightTopId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Right, 0.28f, nullptr, &centerId);
+        const ImGuiID rightBottomId = ImGui::DockBuilderSplitNode(rightTopId, ImGuiDir_Down, 0.55f, nullptr, &rightTopId);
 
         ImGui::DockBuilderDockWindow("Inspector", leftId);
-        ImGui::DockBuilderDockWindow("Hierarchy", rightId);
+        ImGui::DockBuilderDockWindow("Hierarchy", rightTopId);
+        ImGui::DockBuilderDockWindow("Assets", rightBottomId);
         ImGui::DockBuilderFinish(dockspaceId);
     }
 

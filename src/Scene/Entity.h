@@ -9,7 +9,7 @@
 #include <vector>
 
 class Mesh;
-class Texture;
+struct Material;
 
 // One object in the scene. Entities are created, destroyed and re-parented
 // through their Scene, which owns them.
@@ -21,11 +21,7 @@ public:
     std::string name;
     Transform transform;              // relative to the parent
     const Mesh* mesh = nullptr;       // not owned; nullptr = nothing drawn
-    const Texture* texture = nullptr; // not owned; nullptr = plain white
-    glm::vec3 tint{ 1.0f };           // multiplied with the texture
-    float specularStrength = 0.5f;    // 0 = matte, 1 = full-strength highlight
-    float shininess = 32.0f;          // higher = smaller, sharper highlight
-    bool doubleSided = false;         // draw back faces too (for flat quads/planes)
+    Material* material = nullptr;     // not owned, may be shared; nullptr = default grey
     bool visible = true;              // false also hides all children
 
     Entity* GetParent() const { return m_Parent; }

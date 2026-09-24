@@ -2,6 +2,7 @@
 
 #include "Assets/AssetLibrary.h"
 #include "Scene/Scene.h"
+#include "UI/AssetWidgets.h"
 
 #include <imgui.h>
 #include <misc/cpp/imgui_stdlib.h>
@@ -12,7 +13,7 @@
 // Drag-and-drop payload type for dragging entities around the tree.
 static constexpr const char* kEntityPayload = "ENTITY";
 
-void SceneHierarchyPanel::Draw(Scene& scene, const AssetLibrary& assets)
+void SceneHierarchyPanel::Draw(Scene& scene, AssetLibrary& assets)
 {
     DrawHierarchy(scene, assets);
 
@@ -21,7 +22,7 @@ void SceneHierarchyPanel::Draw(Scene& scene, const AssetLibrary& assets)
         change();
     m_Deferred.clear();
 
-    DrawInspector(assets);
+    DrawInspector(scene, assets);
 }
 
 void SceneHierarchyPanel::DrawHierarchy(Scene& scene, const AssetLibrary& assets)
@@ -112,6 +113,9 @@ void SceneHierarchyPanel::DrawEntityNode(Scene& scene, const AssetLibrary& asset
             Entity* target = &entity;
             m_Deferred.push_back([&scene, dragged, target] { scene.SetParent(*dragged, target); });
         }
+        // A material dragged from the Assets panel is applied to this entity.
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kMaterialPayload))
+            entity.material = *static_cast<Material* const*>(payload->Data);
         ImGui::EndDragDropTarget();
     }
 
@@ -148,7 +152,7 @@ void SceneHierarchyPanel::DrawCreateMenuItems(Scene& scene, const AssetLibrary& 
     }
 }
 
-void SceneHierarchyPanel::DrawInspector(const AssetLibrary& assets)
+void SceneHierarchyPanel::DrawInspector(const Scene& scene, AssetLibrary& assets)
 {
     ImGui::Begin("Inspector");
 
@@ -183,23 +187,64 @@ void SceneHierarchyPanel::DrawInspector(const AssetLibrary& assets)
         }
         ImGui::EndCombo();
     }
-    if (ImGui::BeginCombo("Texture", assets.GetName(entity.texture)))
+
+    DrawMaterialSection(scene, assets, entity);
+
+    ImGui::End();
+}
+
+void SceneHierarchyPanel::DrawMaterialSection(const Scene& scene, AssetLibrary& assets, Entity& entity)
+{
+    ImGui::SeparatorText("Material");
+
+    // Material picker, plus a New button, like Blender's material slot row.
+    const float buttonWidth = ImGui::CalcTextSize("New").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - buttonWidth - ImGui::GetStyle().ItemSpacing.x);
+    if (ImGui::BeginCombo("##material", entity.material ? entity.material->name.c_str() : "Default"))
     {
-        if (ImGui::Selectable("None", entity.texture == nullptr))
-            entity.texture = nullptr;
-        for (const AssetLibrary::NamedTexture& entry : assets.GetTextures())
+        if (ImGui::Selectable("Default", entity.material == nullptr))
+            entity.material = nullptr;
+        for (const std::unique_ptr<Material>& material : assets.GetMaterials())
         {
-            if (ImGui::Selectable(entry.name.c_str(), entity.texture == entry.texture.get()))
-                entity.texture = entry.texture.get();
+            ImGui::PushID(material.get());
+            if (ImGui::Selectable(material->name.c_str(), entity.material == material.get()))
+                entity.material = material.get();
+            ImGui::PopID();
         }
         ImGui::EndCombo();
     }
-    ImGui::ColorEdit3("Tint", &entity.tint.x);
-    ImGui::SliderFloat("Specular", &entity.specularStrength, 0.0f, 1.0f);
-    ImGui::SliderFloat("Shininess", &entity.shininess, 1.0f, 256.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
-    ImGui::Checkbox("Double sided", &entity.doubleSided);
+    else if (ImGui::BeginDragDropTarget())
+    {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kMaterialPayload))
+            entity.material = *static_cast<Material* const*>(payload->Data);
+        ImGui::EndDragDropTarget();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("New"))
+        entity.material = assets.CreateMaterial();
+    ImGui::SetItemTooltip("Create a new material for this object");
 
-    ImGui::End();
+    if (!entity.material)
+    {
+        ImGui::TextDisabled("Using the default grey material.");
+        return;
+    }
+
+    Material& material = *entity.material;
+    ImGui::InputText("Name##material", &material.name);
+
+    // Shared materials change every object using them. "Make Single User"
+    // gives this object its own copy to edit, as in Blender.
+    const int users = scene.CountUsers(&material);
+    if (users > 1)
+    {
+        ImGui::TextDisabled("Shared by %d objects", users);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Make Single User"))
+            entity.material = assets.DuplicateMaterial(material);
+    }
+
+    DrawMaterialEditor(*entity.material, assets);
 }
 
 void SceneHierarchyPanel::QueueCreate(Scene& scene, const char* name, const Mesh* mesh, Entity* parent)

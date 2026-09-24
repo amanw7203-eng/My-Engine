@@ -1,10 +1,14 @@
 #include "Scene/Scene.h"
 
+#include "Assets/Material.h"
+#include "Renderer/ColorSpace.h"
 #include "Renderer/Mesh.h"
 #include "Renderer/Shader.h"
 #include "Renderer/Texture.h"
 
 #include <glad/gl.h>
+
+#include <algorithm>
 
 Entity& Scene::CreateEntity(std::string name, Entity* parent)
 {
@@ -37,16 +41,85 @@ bool Scene::SetParent(Entity& entity, Entity* newParent)
     return true;
 }
 
-void Scene::Draw(const Shader& shader, const Texture& defaultTexture,
-                 std::vector<Entity*>* drawnEntities) const
+// Texture unit for each material map. Unit 1 is left for the shadow map.
+namespace TextureUnit
 {
-    for (Entity* root : m_Roots)
-        DrawEntity(*root, glm::mat4(1.0f), shader, defaultTexture, drawnEntities);
+    constexpr unsigned int BaseColor = 0;
+    constexpr unsigned int Metallic = 2;
+    constexpr unsigned int Roughness = 3;
+    constexpr unsigned int Normal = 4;
+    constexpr unsigned int Ao = 5;
+    constexpr unsigned int Emission = 6;
 }
 
-void Scene::DrawEntity(Entity& entity, const glm::mat4& parentWorld, const Shader& shader,
-                       const Texture& defaultTexture, std::vector<Entity*>* drawnEntities) const
+void Scene::SetMaterialSamplers(const Shader& shader)
 {
+    shader.SetInt("uBaseColorMap", TextureUnit::BaseColor);
+    shader.SetInt("uMetallicMap", TextureUnit::Metallic);
+    shader.SetInt("uRoughnessMap", TextureUnit::Roughness);
+    shader.SetInt("uNormalMap", TextureUnit::Normal);
+    shader.SetInt("uAoMap", TextureUnit::Ao);
+    shader.SetInt("uEmissionMap", TextureUnit::Emission);
+}
+
+// Binds one map (or white if the slot is empty, which leaves the value
+// unchanged when multiplied) and tells the shader whether to decode it
+// from sRGB.
+static void BindMap(const Shader& shader, const Texture* map, const Texture& white,
+                    unsigned int unit, const char* srgbUniform)
+{
+    const Texture& texture = map ? *map : white;
+    texture.Bind(unit);
+    shader.SetInt(srgbUniform, map && map->colorSpace == Texture::ColorSpace::Srgb);
+}
+
+static void BindMaterial(const Shader& shader, const Material& material, const Texture& white)
+{
+    // The color pickers show sRGB; lighting works in linear light.
+    shader.SetVec3("uBaseColor", SrgbToLinear(material.baseColor));
+    shader.SetFloat("uMetallic", material.metallic);
+    shader.SetFloat("uRoughness", material.roughness);
+    shader.SetInt("uHasNormalMap", material.normalMap != nullptr);
+    shader.SetFloat("uNormalStrength", material.normalStrength);
+    shader.SetFloat("uAoStrength", material.aoStrength);
+    shader.SetVec3("uEmission", SrgbToLinear(material.emissionColor) * material.emissionStrength);
+    shader.SetVec2("uUvTiling", material.tiling);
+    shader.SetVec2("uUvOffset", material.offset);
+
+    BindMap(shader, material.baseColorMap, white, TextureUnit::BaseColor, "uBaseColorMapSrgb");
+    BindMap(shader, material.metallicMap, white, TextureUnit::Metallic, "uMetallicMapSrgb");
+    BindMap(shader, material.roughnessMap, white, TextureUnit::Roughness, "uRoughnessMapSrgb");
+    BindMap(shader, material.normalMap, white, TextureUnit::Normal, "uNormalMapSrgb");
+    BindMap(shader, material.aoMap, white, TextureUnit::Ao, "uAoMapSrgb");
+    BindMap(shader, material.emissionMap, white, TextureUnit::Emission, "uEmissionMapSrgb");
+}
+
+void Scene::Draw(const Shader& shader, const Material& defaultMaterial, const Texture& whiteTexture,
+                 std::vector<Entity*>* drawnEntities) const
+{
+    const DrawContext context{ shader, defaultMaterial, whiteTexture, drawnEntities };
+    for (Entity* root : m_Roots)
+        DrawEntity(*root, glm::mat4(1.0f), context);
+}
+
+void Scene::ClearMaterial(const Material* material)
+{
+    for (const std::unique_ptr<Entity>& entity : m_Entities)
+    {
+        if (entity->material == material)
+            entity->material = nullptr;
+    }
+}
+
+int Scene::CountUsers(const Material* material) const
+{
+    return static_cast<int>(std::count_if(m_Entities.begin(), m_Entities.end(),
+                                          [&](const std::unique_ptr<Entity>& e) { return e->material == material; }));
+}
+
+void Scene::DrawEntity(Entity& entity, const glm::mat4& parentWorld, const DrawContext& context) const
+{
+    const Shader& shader = context.shader;
     if (!entity.visible)
         return; // hides the whole subtree
 
@@ -60,14 +133,12 @@ void Scene::DrawEntity(Entity& entity, const glm::mat4& parentWorld, const Shade
         // Inverse-transpose keeps normals perpendicular to the surface when
         // the entity (or a parent) is scaled unevenly.
         shader.SetMat3("uNormalMatrix", glm::transpose(glm::inverse(glm::mat3(world))));
-        shader.SetVec3("uTint", entity.tint);
-        shader.SetFloat("uSpecularStrength", entity.specularStrength);
-        shader.SetFloat("uShininess", entity.shininess);
-        (entity.texture ? *entity.texture : defaultTexture).Bind(0);
-        if (drawnEntities)
+        const Material& material = entity.material ? *entity.material : context.defaultMaterial;
+        BindMaterial(shader, material, context.whiteTexture);
+        if (context.drawnEntities)
         {
-            drawnEntities->push_back(&entity);
-            shader.SetUInt("uEntityId", static_cast<unsigned int>(drawnEntities->size()));
+            context.drawnEntities->push_back(&entity);
+            shader.SetUInt("uEntityId", static_cast<unsigned int>(context.drawnEntities->size()));
         }
 
         // A negative scale mirrors the mesh, which flips its triangles'
@@ -77,7 +148,7 @@ void Scene::DrawEntity(Entity& entity, const glm::mat4& parentWorld, const Shade
         if (mirrored)
             glFrontFace(GL_CW);
         // Double-sided entities skip culling so their back is visible too.
-        const bool pauseCulling = entity.doubleSided && glIsEnabled(GL_CULL_FACE);
+        const bool pauseCulling = material.doubleSided && glIsEnabled(GL_CULL_FACE);
         if (pauseCulling)
             glDisable(GL_CULL_FACE);
 
@@ -90,7 +161,7 @@ void Scene::DrawEntity(Entity& entity, const glm::mat4& parentWorld, const Shade
     }
 
     for (Entity* child : entity.m_Children)
-        DrawEntity(*child, world, shader, defaultTexture, drawnEntities);
+        DrawEntity(*child, world, context);
 }
 
 void Scene::Detach(Entity& entity)

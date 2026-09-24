@@ -56,8 +56,8 @@ add_library(imgui STATIC
 target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
 target_link_libraries(imgui PUBLIC SDL3::SDL3 OpenGL::GL)
 
-# glad: loads modern OpenGL functions at runtime. Generated for GL 3.3 core
-# (glad2: glad --api gl:core=3.3 --extensions "" --out-path external/glad c)
+# glad: loads modern OpenGL functions at runtime. Generated for GL 4.6 core
+# (glad2: glad --api gl:core=4.6 --extensions "" --out-path external/glad c)
 add_library(glad STATIC external/glad/src/gl.c)
 target_include_directories(glad PUBLIC external/glad/include)
 
@@ -78,6 +78,8 @@ add_executable(MyEngine
     src/Renderer/Texture.cpp
     src/Scene/Entity.cpp
     src/Scene/Scene.cpp
+    src/UI/AssetsPanel.cpp
+    src/UI/AssetWidgets.cpp
     src/UI/ImGuiLayer.cpp
     src/UI/SceneHierarchyPanel.cpp
     src/UI/SideDrawer.cpp

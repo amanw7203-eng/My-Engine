@@ -1,4 +1,4 @@
-#version 330 core
+#version 460 core
 layout (location = 0) in vec3 aPosition;
 
 // Position only: used by passes that don't need lighting or textures

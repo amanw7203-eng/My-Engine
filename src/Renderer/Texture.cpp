@@ -6,6 +6,7 @@
 #include <utility>
 
 Texture::Texture(const std::filesystem::path& path)
+    : m_Path(path)
 {
     // Image files store the top row first, but OpenGL expects UV (0,0) to be
     // the bottom-left, so flip rows while loading.
@@ -77,7 +78,9 @@ Texture::~Texture()
 }
 
 Texture::Texture(Texture&& other) noexcept
-    : m_Texture(std::exchange(other.m_Texture, 0))
+    : colorSpace(other.colorSpace)
+    , m_Path(std::move(other.m_Path))
+    , m_Texture(std::exchange(other.m_Texture, 0))
     , m_Width(std::exchange(other.m_Width, 0))
     , m_Height(std::exchange(other.m_Height, 0))
     , m_Loaded(std::exchange(other.m_Loaded, false))
@@ -89,6 +92,8 @@ Texture& Texture::operator=(Texture&& other) noexcept
     if (this != &other)
     {
         glDeleteTextures(1, &m_Texture);
+        colorSpace = other.colorSpace;
+        m_Path = std::move(other.m_Path);
         m_Texture = std::exchange(other.m_Texture, 0);
         m_Width = std::exchange(other.m_Width, 0);
         m_Height = std::exchange(other.m_Height, 0);
