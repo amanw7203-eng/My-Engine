@@ -1,6 +1,7 @@
 #pragma once
 
 #include <SDL3/SDL.h>
+#include <imgui.h>
 
 // Sets up Dear ImGui for an SDL3 window with an OpenGL context, and shuts it
 // down in the destructor. Must be destroyed before the GL context is.
@@ -26,4 +27,13 @@ public:
     // widget; the game should ignore that input so both don't react to it.
     bool WantsMouse() const;
     bool WantsKeyboard() const;
+
+    // The see-through middle of the dock space where the 3D scene shows,
+    // in screen pixels. Updated by BeginFrame.
+    const ImVec2& GetViewportMin() const { return m_ViewportMin; }
+    const ImVec2& GetViewportMax() const { return m_ViewportMax; }
+
+private:
+    ImVec2 m_ViewportMin{ 0.0f, 0.0f };
+    ImVec2 m_ViewportMax{ 0.0f, 0.0f };
 };

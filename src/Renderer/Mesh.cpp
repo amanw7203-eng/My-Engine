@@ -31,6 +31,9 @@ Mesh::Mesh(std::span<const Vertex> vertices, std::span<const unsigned int> indic
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride,
                           reinterpret_cast<void*>(offsetof(Vertex, uv)));
     glEnableVertexAttribArray(2);
+    glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, stride,
+                          reinterpret_cast<void*>(offsetof(Vertex, normal)));
+    glEnableVertexAttribArray(3);
 
     // Unbind the VAO first: unbinding the EBO while it is bound would
     // remove the EBO from it.
@@ -72,11 +75,12 @@ void Mesh::Draw() const
 Mesh Mesh::CreateQuad()
 {
     const glm::vec3 white(1.0f);
+    const glm::vec3 n(0.0f, 0.0f, 1.0f); // faces +Z
     const Vertex vertices[] = {
-        { { -0.5f, -0.5f, 0.0f }, white, { 0.0f, 0.0f } }, // 0: bottom left
-        { {  0.5f, -0.5f, 0.0f }, white, { 1.0f, 0.0f } }, // 1: bottom right
-        { {  0.5f,  0.5f, 0.0f }, white, { 1.0f, 1.0f } }, // 2: top right
-        { { -0.5f,  0.5f, 0.0f }, white, { 0.0f, 1.0f } }, // 3: top left
+        { { -0.5f, -0.5f, 0.0f }, white, { 0.0f, 0.0f }, n }, // 0: bottom left
+        { {  0.5f, -0.5f, 0.0f }, white, { 1.0f, 0.0f }, n }, // 1: bottom right
+        { {  0.5f,  0.5f, 0.0f }, white, { 1.0f, 1.0f }, n }, // 2: top right
+        { { -0.5f,  0.5f, 0.0f }, white, { 0.0f, 1.0f }, n }, // 3: top left
     };
 
     // Two triangles built from those corners, reusing vertices 0 and 2.
@@ -93,13 +97,14 @@ Mesh Mesh::CreatePlane(float size, float uvRepeat)
     const float h = size * 0.5f;
     const float r = uvRepeat;
     const glm::vec3 white(1.0f);
+    const glm::vec3 n(0.0f, 1.0f, 0.0f); // faces up
     // Wound counter-clockwise when seen from above (+Y), same as CreateQuad
     // seen from the front, so both face the same way if culling is enabled.
     const Vertex vertices[] = {
-        { { -h, 0.0f,  h }, white, { 0.0f, 0.0f } }, // 0: near left
-        { {  h, 0.0f,  h }, white, { r,    0.0f } }, // 1: near right
-        { {  h, 0.0f, -h }, white, { r,    r    } }, // 2: far right
-        { { -h, 0.0f, -h }, white, { 0.0f, r    } }, // 3: far left
+        { { -h, 0.0f,  h }, white, { 0.0f, 0.0f }, n }, // 0: near left
+        { {  h, 0.0f,  h }, white, { r,    0.0f }, n }, // 1: near right
+        { {  h, 0.0f, -h }, white, { r,    r    }, n }, // 2: far right
+        { { -h, 0.0f, -h }, white, { 0.0f, r    }, n }, // 3: far left
     };
 
     const unsigned int indices[] = {
@@ -123,15 +128,22 @@ Mesh Mesh::CreateCube()
         { { -h,  h,  h }, {  h,  h,  h }, {  h,  h, -h }, { -h,  h, -h } }, // +Y top
         { { -h, -h, -h }, {  h, -h, -h }, {  h, -h,  h }, { -h, -h,  h } }, // -Y bottom
     };
+    // Same order as `faces`. Every vertex of a face shares its normal, which
+    // keeps the cube's edges sharp instead of smoothly shaded.
+    const glm::vec3 normals[6] = {
+        {  0.0f,  0.0f,  1.0f }, {  0.0f,  0.0f, -1.0f },
+        {  1.0f,  0.0f,  0.0f }, { -1.0f,  0.0f,  0.0f },
+        {  0.0f,  1.0f,  0.0f }, {  0.0f, -1.0f,  0.0f },
+    };
     const glm::vec2 uvs[4] = { { 0.0f, 0.0f }, { 1.0f, 0.0f }, { 1.0f, 1.0f }, { 0.0f, 1.0f } };
 
     std::vector<Vertex> vertices;
     std::vector<unsigned int> indices;
-    for (const auto& face : faces)
+    for (int face = 0; face < 6; ++face)
     {
         const unsigned int base = static_cast<unsigned int>(vertices.size());
         for (int corner = 0; corner < 4; ++corner)
-            vertices.push_back({ face[corner], glm::vec3(1.0f), uvs[corner] });
+            vertices.push_back({ faces[face][corner], glm::vec3(1.0f), uvs[corner], normals[face] });
 
         for (unsigned int i : { 0u, 1u, 2u, 2u, 3u, 0u })
             indices.push_back(base + i);

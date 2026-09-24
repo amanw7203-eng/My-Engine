@@ -1,6 +1,7 @@
 #include "UI/ImGuiLayer.h"
 
 #include <imgui.h>
+#include <imgui_internal.h> // DockBuilder API for the default panel layout
 #include <imgui_impl_opengl3.h>
 #include <imgui_impl_sdl3.h>
 
@@ -49,8 +50,29 @@ void ImGuiLayer::BeginFrame()
 
     // A dock space covering the window, with a see-through middle so the 3D
     // scene still shows. Panels can be docked to its edges.
-    ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(),
-                                 ImGuiDockNodeFlags_PassthruCentralNode);
+    const ImGuiID dockspaceId = ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(),
+                                                             ImGuiDockNodeFlags_PassthruCentralNode);
+
+    // Default layout, only when imgui.ini has no saved one: Inspector on the
+    // left, Hierarchy on the right, 3D viewport in the middle.
+    ImGuiDockNode* dockspace = ImGui::DockBuilderGetNode(dockspaceId);
+    if (dockspace && dockspace->IsLeafNode() && dockspace->Windows.empty())
+    {
+        ImGuiID centerId = dockspaceId;
+        const ImGuiID leftId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Left, 0.22f, nullptr, &centerId);
+        const ImGuiID rightId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Right, 0.28f, nullptr, &centerId);
+
+        ImGui::DockBuilderDockWindow("Inspector", leftId);
+        ImGui::DockBuilderDockWindow("Hierarchy", rightId);
+        ImGui::DockBuilderFinish(dockspaceId);
+    }
+
+    // Remember where the 3D view is, for overlays drawn on top of it.
+    if (const ImGuiDockNode* central = ImGui::DockBuilderGetCentralNode(dockspaceId))
+    {
+        m_ViewportMin = central->Pos;
+        m_ViewportMax = ImVec2(central->Pos.x + central->Size.x, central->Pos.y + central->Size.y);
+    }
 }
 
 void ImGuiLayer::EndFrame()

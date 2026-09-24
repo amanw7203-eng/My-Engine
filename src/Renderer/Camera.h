@@ -20,6 +20,7 @@ public:
     glm::mat4 GetProjectionMatrix(float aspect) const;
 
     const glm::vec3& GetPosition() const { return m_Position; }
+    glm::vec3 GetForward() const; // unit vector the camera looks along
 
     float moveSpeed = 3.0f;          // units per second
     float sprintMultiplier = 3.0f;   // applied while sprinting
@@ -28,8 +29,6 @@ public:
     bool sprinting = false;
 
 private:
-    glm::vec3 GetForward() const;
-
     glm::vec3 m_Position;
     float m_Yaw = -90.0f;  // degrees; -90 looks down -Z
     float m_Pitch = 0.0f;  // degrees; clamped so the view never flips

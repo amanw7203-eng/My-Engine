@@ -2,10 +2,12 @@
 #include "Renderer/Camera.h"
 #include "Renderer/Mesh.h"
 #include "Renderer/Shader.h"
+#include "Renderer/ShadowMap.h"
 #include "Renderer/Texture.h"
 #include "Scene/Scene.h"
 #include "UI/ImGuiLayer.h"
 #include "UI/SceneHierarchyPanel.h"
+#include "UI/SideDrawer.h"
 
 #include <glad/gl.h>
 #include <SDL3/SDL.h>
@@ -14,6 +16,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <imgui.h>
 
+#include <cmath>
 #include <filesystem>
 #include <iostream>
 
@@ -81,9 +84,13 @@ int main(int /*argc*/, char* /*argv*/[])
     {
         ImGuiLayer ui(window, glContext);
 
-        Shader shader(assetDir / "shaders/basic.vert", assetDir / "shaders/basic.frag");
-        if (!shader.IsValid())
+        Shader shader(assetDir / "shaders/lit.vert", assetDir / "shaders/lit.frag");
+        // Draws the scene from the sun's point of view, recording only depth.
+        Shader depthShader(assetDir / "shaders/shadow_depth.vert", assetDir / "shaders/shadow_depth.frag");
+        if (!shader.IsValid() || !depthShader.IsValid())
             exitCode = 1;
+
+        ShadowMap shadowMap(2048);
 
         // --- Assets ---
         AssetLibrary assets;
@@ -106,6 +113,7 @@ int main(int /*argc*/, char* /*argv*/[])
         floorEntity.mesh = floorMesh;
         floorEntity.texture = checker;
         floorEntity.transform.position.y = -0.5f;
+        floorEntity.specularStrength = 0.15f; // mostly matte
 
         Entity& quadEntity = scene.CreateEntity("Quad");
         quadEntity.mesh = quadMesh;
@@ -133,10 +141,70 @@ int main(int /*argc*/, char* /*argv*/[])
         glm::vec3 clearColor(0.10f, 0.12f, 0.18f);
         bool showImGuiDemo = false;
 
+        // A single directional "sun" light. Its direction is given as two
+        // angles: azimuth spins it around the vertical axis, elevation is how
+        // high above the horizon it sits (90 = straight overhead).
+        float lightAzimuth = 35.0f;
+        float lightElevation = 50.0f;
+        glm::vec3 lightColor(1.0f, 0.96f, 0.9f);
+        glm::vec3 ambientColor(0.18f, 0.2f, 0.25f);
+
+        // Shadows are only drawn within this distance of the camera. Larger
+        // covers more ground but spreads the shadow map's texels thinner,
+        // making edges blockier.
+        bool shadowsEnabled = true;
+        float shadowDistance = 15.0f;
+        bool showShadowMap = false;
+
         // Mouse look is active while right mouse is held OR while locked on
         // with Left Alt.
         bool rightMouseHeld = false;
         bool mouseLookLocked = false;
+
+        // Engine settings, in a Blender-style sidebar on the right edge of
+        // the 3D view: one tab per group.
+        SideDrawer settingsDrawer;
+        const SideDrawer::Tab settingsTabs[] = {
+            { "Camera", [&] {
+                const glm::vec3& camPos = camera.GetPosition();
+                ImGui::Text("Position: %.2f, %.2f, %.2f", camPos.x, camPos.y, camPos.z);
+                ImGui::SliderFloat("Move speed", &camera.moveSpeed, 0.5f, 20.0f);
+                ImGui::SliderFloat("Sensitivity", &camera.mouseSensitivity, 0.01f, 0.5f);
+                ImGui::SliderFloat("Field of view", &camera.fieldOfView, 30.0f, 110.0f);
+                ImGui::Checkbox("Mouse look locked", &mouseLookLocked);
+            } },
+            { "Lighting", [&] {
+                ImGui::SeparatorText("Sun");
+                ImGui::SliderFloat("Azimuth", &lightAzimuth, -180.0f, 180.0f, "%.0f deg");
+                ImGui::SliderFloat("Elevation", &lightElevation, -90.0f, 90.0f, "%.0f deg");
+                ImGui::ColorEdit3("Color", &lightColor.x, ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+                ImGui::ColorEdit3("Ambient", &ambientColor.x);
+
+                ImGui::SeparatorText("Shadows");
+                ImGui::Checkbox("Enabled", &shadowsEnabled);
+                ImGui::SliderFloat("Distance", &shadowDistance, 2.0f, 50.0f, "%.0f");
+                ImGui::Checkbox("Show shadow map", &showShadowMap);
+                if (showShadowMap)
+                {
+                    // Depth as greyscale: black = close to the sun. Flipped
+                    // vertically because GL textures start at the bottom row.
+                    const float size = ImGui::GetContentRegionAvail().x;
+                    ImGui::Image(static_cast<ImTextureID>(shadowMap.GetTextureId()), ImVec2(size, size),
+                                 ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+                }
+            } },
+            { "Scene", [&] {
+                const ImGuiIO& io = ImGui::GetIO();
+                ImGui::Text("%.1f FPS (%.2f ms)", io.Framerate, 1000.0f / io.Framerate);
+                ImGui::ColorEdit3("Background", &clearColor.x);
+            } },
+            { "Help", [&] {
+                ImGui::TextDisabled("WASD move, Q/E down/up, Shift sprint");
+                ImGui::TextDisabled("Hold right mouse or Left Alt to look");
+                ImGui::TextDisabled("Esc quit");
+                ImGui::Checkbox("Show ImGui demo", &showImGuiDemo);
+            } },
+        };
 
         Uint64 lastTicks = SDL_GetTicksNS();
         bool running = shader.IsValid();
@@ -149,9 +217,13 @@ int main(int /*argc*/, char* /*argv*/[])
             {
                 // While flying the camera the cursor is hidden, so the UI
                 // shouldn't see mouse input (it would hover/click blindly).
+                // Button releases always go through: the right-click that
+                // starts mouse look reaches the UI before look mode turns on,
+                // so its release must too, or the UI thinks the button is
+                // stuck down (it then ignores hovering, and keeps the mouse
+                // captured so even the window's title bar stops responding).
                 const bool isMouseEvent = event.type == SDL_EVENT_MOUSE_MOTION
                                        || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN
-                                       || event.type == SDL_EVENT_MOUSE_BUTTON_UP
                                        || event.type == SDL_EVENT_MOUSE_WHEEL;
                 if (!(isMouseEvent && SDL_GetWindowRelativeMouseMode(window)))
                     ui.ProcessEvent(event);
@@ -190,34 +262,7 @@ int main(int /*argc*/, char* /*argv*/[])
             ui.BeginFrame();
 
             hierarchyPanel.Draw(scene, assets);
-
-            // Starts on the right so it doesn't overlap Hierarchy/Inspector.
-            const ImGuiViewport* viewport = ImGui::GetMainViewport();
-            const float fontSize = ImGui::GetFontSize();
-            ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - fontSize, viewport->WorkPos.y + fontSize),
-                                    ImGuiCond_FirstUseEver, ImVec2(1.0f, 0.0f));
-            ImGui::SetNextWindowSize(ImVec2(fontSize * 20, fontSize * 20), ImGuiCond_FirstUseEver);
-            ImGui::Begin("Engine");
-            const ImGuiIO& io = ImGui::GetIO();
-            ImGui::Text("%.1f FPS (%.2f ms)", io.Framerate, 1000.0f / io.Framerate);
-
-            ImGui::SeparatorText("Camera");
-            const glm::vec3& camPos = camera.GetPosition();
-            ImGui::Text("Position: %.2f, %.2f, %.2f", camPos.x, camPos.y, camPos.z);
-            ImGui::SliderFloat("Move speed", &camera.moveSpeed, 0.5f, 20.0f);
-            ImGui::SliderFloat("Sensitivity", &camera.mouseSensitivity, 0.01f, 0.5f);
-            ImGui::SliderFloat("Field of view", &camera.fieldOfView, 30.0f, 110.0f);
-            ImGui::Checkbox("Mouse look locked", &mouseLookLocked);
-
-            ImGui::SeparatorText("Scene");
-            ImGui::ColorEdit3("Background", &clearColor.x);
-
-            ImGui::SeparatorText("Controls");
-            ImGui::TextDisabled("WASD move, Q/E down/up, Shift sprint");
-            ImGui::TextDisabled("Hold right mouse or Left Alt to look");
-            ImGui::TextDisabled("Esc quit");
-            ImGui::Checkbox("Show ImGui demo", &showImGuiDemo);
-            ImGui::End();
+            settingsDrawer.Draw(ui.GetViewportMin(), ui.GetViewportMax(), settingsTabs);
 
             if (showImGuiDemo)
                 ImGui::ShowDemoWindow(&showImGuiDemo);
@@ -243,21 +288,58 @@ int main(int /*argc*/, char* /*argv*/[])
             // --- Render ---
             int width = 0, height = 0;
             SDL_GetWindowSizeInPixels(window, &width, &height);
-            glViewport(0, 0, width, height);
-            glClearColor(clearColor.r, clearColor.g, clearColor.b, 1.0f);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
             // Recomputed each frame so the image never stretches on resize.
             // (height is 0 while the window is minimised.)
             const float aspect = height > 0 ? static_cast<float>(width) / height : 1.0f;
 
+            // Point from the sun towards the scene (hence the minus signs:
+            // the angles describe where the sun is in the sky).
+            const float azimuth = glm::radians(lightAzimuth);
+            const float elevation = glm::radians(lightElevation);
+            const glm::vec3 toSun(std::cos(elevation) * std::sin(azimuth),
+                                  std::sin(elevation),
+                                  std::cos(elevation) * std::cos(azimuth));
+            const glm::vec3 lightDir = -toSun;
+
+            // Pass 1: shadow map. Draw the scene from the sun, keeping only
+            // how far each surface is from it. The depth shader ignores the
+            // material uniforms Scene::Draw sets.
+            const ShadowMap::Bounds shadowBounds = ShadowMap::FitToView(camera, aspect, shadowDistance);
+            const glm::mat4 lightSpace = shadowMap.GetLightSpaceMatrix(lightDir, shadowBounds);
+            if (shadowsEnabled)
+            {
+                shadowMap.BeginRender();
+                depthShader.Bind();
+                depthShader.SetMat4("uLightSpace", lightSpace);
+                scene.Draw(depthShader, whiteTexture);
+                shadowMap.EndRender();
+            }
+
+            // Pass 2: the lit scene, as seen by the camera.
+            glViewport(0, 0, width, height);
+            glClearColor(clearColor.r, clearColor.g, clearColor.b, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
             shader.Bind();
             shader.SetMat4("uView", camera.GetViewMatrix());
             shader.SetMat4("uProjection", camera.GetProjectionMatrix(aspect));
+            shader.SetVec3("uViewPos", camera.GetPosition());
+            shader.SetVec3("uLightDir", lightDir);
+            shader.SetVec3("uLightColor", lightColor);
+            shader.SetVec3("uAmbientColor", ambientColor);
 
-            // The sampler reads texture unit 0; Scene binds each entity's
-            // texture there before drawing it.
+            shader.SetInt("uShadowsEnabled", shadowsEnabled);
+            shader.SetMat4("uLightSpace", lightSpace);
+            // About 1.5 shadow-map texels, in world units.
+            shader.SetFloat("uShadowNormalOffset",
+                            1.5f * 2.0f * shadowBounds.radius / shadowMap.GetResolution());
+            shader.SetFloat("uShadowDistance", shadowDistance);
+
+            // Entity textures go in unit 0 (Scene binds each one before
+            // drawing it); the shadow map stays in unit 1 for the whole pass.
             shader.SetInt("uTexture", 0);
+            shader.SetInt("uShadowMap", 1);
+            shadowMap.BindTexture(1);
             scene.Draw(shader, whiteTexture);
 
             // UI last, so it draws on top of the scene.

@@ -23,6 +23,8 @@ public:
     const Mesh* mesh = nullptr;       // not owned; nullptr = nothing drawn
     const Texture* texture = nullptr; // not owned; nullptr = plain white
     glm::vec3 tint{ 1.0f };           // multiplied with the texture
+    float specularStrength = 0.5f;    // 0 = matte, 1 = full-strength highlight
+    float shininess = 32.0f;          // higher = smaller, sharper highlight
     bool visible = true;              // false also hides all children
 
     Entity* GetParent() const { return m_Parent; }

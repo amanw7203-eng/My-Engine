@@ -54,7 +54,12 @@ void Scene::DrawEntity(const Entity& entity, const glm::mat4& parentWorld,
     if (entity.mesh)
     {
         shader.SetMat4("uModel", world);
+        // Inverse-transpose keeps normals perpendicular to the surface when
+        // the entity (or a parent) is scaled unevenly.
+        shader.SetMat3("uNormalMatrix", glm::transpose(glm::inverse(glm::mat3(world))));
         shader.SetVec3("uTint", entity.tint);
+        shader.SetFloat("uSpecularStrength", entity.specularStrength);
+        shader.SetFloat("uShininess", entity.shininess);
         (entity.texture ? *entity.texture : defaultTexture).Bind(0);
         entity.mesh->Draw();
     }

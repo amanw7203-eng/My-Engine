@@ -7,12 +7,13 @@
 #include <span>
 
 // One vertex as stored in the vertex buffer. Must match the attribute
-// locations in the shaders: 0 = position, 1 = color, 2 = uv.
+// locations in the shaders: 0 = position, 1 = color, 2 = uv, 3 = normal.
 struct Vertex
 {
     glm::vec3 position;
-    glm::vec3 color; // multiplied with the texture; white = texture as-is
-    glm::vec2 uv;    // texture coordinate: (0,0) bottom-left, (1,1) top-right
+    glm::vec3 color;  // multiplied with the texture; white = texture as-is
+    glm::vec2 uv;     // texture coordinate: (0,0) bottom-left, (1,1) top-right
+    glm::vec3 normal; // unit vector pointing out of the surface, for lighting
 };
 
 // Owns the GPU buffers for a piece of indexed geometry (VAO + VBO + EBO).

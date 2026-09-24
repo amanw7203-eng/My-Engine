@@ -73,11 +73,13 @@ add_executable(MyEngine
     src/Renderer/Camera.cpp
     src/Renderer/Mesh.cpp
     src/Renderer/Shader.cpp
+    src/Renderer/ShadowMap.cpp
     src/Renderer/Texture.cpp
     src/Scene/Entity.cpp
     src/Scene/Scene.cpp
     src/UI/ImGuiLayer.cpp
     src/UI/SceneHierarchyPanel.cpp
+    src/UI/SideDrawer.cpp
 )
 
 target_include_directories(MyEngine PRIVATE src)

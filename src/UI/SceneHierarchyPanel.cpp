@@ -27,8 +27,6 @@ void SceneHierarchyPanel::Draw(Scene& scene, const AssetLibrary& assets)
 void SceneHierarchyPanel::DrawHierarchy(Scene& scene, const AssetLibrary& assets)
 {
     const float fontSize = ImGui::GetFontSize();
-    ImGui::SetNextWindowPos(ImVec2(fontSize, fontSize), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(fontSize * 18, fontSize * 22), ImGuiCond_FirstUseEver);
     ImGui::Begin("Hierarchy");
 
     if (ImGui::Button("+ Add"))
@@ -152,9 +150,6 @@ void SceneHierarchyPanel::DrawCreateMenuItems(Scene& scene, const AssetLibrary& 
 
 void SceneHierarchyPanel::DrawInspector(const AssetLibrary& assets)
 {
-    const float fontSize = ImGui::GetFontSize();
-    ImGui::SetNextWindowPos(ImVec2(fontSize, fontSize * 24), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(fontSize * 18, fontSize * 20), ImGuiCond_FirstUseEver);
     ImGui::Begin("Inspector");
 
     if (!m_Selected)
@@ -200,6 +195,8 @@ void SceneHierarchyPanel::DrawInspector(const AssetLibrary& assets)
         ImGui::EndCombo();
     }
     ImGui::ColorEdit3("Tint", &entity.tint.x);
+    ImGui::SliderFloat("Specular", &entity.specularStrength, 0.0f, 1.0f);
+    ImGui::SliderFloat("Shininess", &entity.shininess, 1.0f, 256.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
 
     ImGui::End();
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <glad/gl.h>
+#include <glm/mat3x3.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 
@@ -29,7 +30,9 @@ public:
 
     // Uniform setters. The shader must be bound first.
     void SetInt(const char* name, int value) const;
+    void SetFloat(const char* name, float value) const;
     void SetVec3(const char* name, const glm::vec3& value) const;
+    void SetMat3(const char* name, const glm::mat3& value) const;
     void SetMat4(const char* name, const glm::mat4& value) const;
 
 private:
