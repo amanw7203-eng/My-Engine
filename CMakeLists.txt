@@ -66,10 +66,36 @@ target_include_directories(glad PUBLIC external/glad/include)
 add_library(stb_image STATIC external/stb/stb_image.c)
 target_include_directories(stb_image PUBLIC external/stb)
 
+# CUDA: the runtime API that OptiX runs on top of. Only host code includes
+# it, so the CUDA language isn't enabled; the .cu device programs are
+# compiled separately with nvcc.
+find_package(CUDAToolkit REQUIRED)
+
+# OptiX: hardware ray tracing on the RT cores. Header-only, as the
+# implementation ships inside the NVIDIA driver.
+FetchContent_Declare(
+    optix
+    GIT_REPOSITORY https://github.com/NVIDIA/optix-dev.git
+    GIT_TAG        v9.1.0
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(optix)
+
+add_library(optix INTERFACE)
+target_include_directories(optix INTERFACE ${optix_SOURCE_DIR}/include)
+target_link_libraries(optix INTERFACE CUDA::cudart_static)
+
 # --- Engine -----------------------------------------------------------------
 add_executable(MyEngine
     src/main.cpp
     src/Assets/AssetLibrary.cpp
+    src/RayTracing/CudaBuffer.cpp
+    src/RayTracing/Denoiser.cpp
+    src/RayTracing/InteropTexture.cpp
+    src/RayTracing/MeshAccel.cpp
+    src/RayTracing/OptixContext.cpp
+    src/RayTracing/RayTracer.cpp
+    src/RayTracing/SceneAccel.cpp
     src/Renderer/Camera.cpp
     src/Renderer/Mesh.cpp
     src/Renderer/ObjectPicker.cpp
@@ -86,7 +112,7 @@ add_executable(MyEngine
 )
 
 target_include_directories(MyEngine PRIVATE src)
-target_link_libraries(MyEngine PRIVATE SDL3::SDL3 OpenGL::GL glad glm::glm stb_image imgui)
+target_link_libraries(MyEngine PRIVATE SDL3::SDL3 OpenGL::GL glad glm::glm stb_image imgui optix)
 
 if(MSVC)
     target_compile_options(MyEngine PRIVATE /W4 /permissive-)
@@ -103,3 +129,26 @@ add_custom_target(copy_assets ALL
     COMMENT "Copying assets"
 )
 add_dependencies(MyEngine copy_assets)
+
+# OptiX programs: the code that runs on the GPU for each ray. nvcc compiles
+# them to OptiX-IR, which the engine loads at runtime from raytracing/ next
+# to the executable. compute_75 (Turing, the first RTX generation) is the
+# oldest target CUDA 13 supports; the driver compiles it for the actual GPU.
+set(OPTIX_PROGRAMS_SOURCE ${CMAKE_SOURCE_DIR}/src/RayTracing/Programs.cu)
+set(OPTIX_PROGRAMS_OUTPUT ${CMAKE_BINARY_DIR}/optix/$<CONFIG>/programs.optixir)
+get_filename_component(OPTIX_HOST_COMPILER_DIR ${CMAKE_CXX_COMPILER} DIRECTORY)
+add_custom_command(
+    OUTPUT  ${OPTIX_PROGRAMS_OUTPUT}
+    COMMAND ${CUDAToolkit_NVCC_EXECUTABLE}
+            -optix-ir -arch=compute_75 -std=c++17 -use_fast_math -lineinfo
+            -ccbin ${OPTIX_HOST_COMPILER_DIR}
+            -I${optix_SOURCE_DIR}/include -I${CMAKE_SOURCE_DIR}/src
+            ${OPTIX_PROGRAMS_SOURCE} -o ${OPTIX_PROGRAMS_OUTPUT}
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${OPTIX_PROGRAMS_OUTPUT} $<TARGET_FILE_DIR:MyEngine>/raytracing/programs.optixir
+    DEPENDS ${OPTIX_PROGRAMS_SOURCE} ${CMAKE_SOURCE_DIR}/src/RayTracing/DeviceTypes.h
+    COMMENT "Compiling OptiX programs"
+    VERBATIM
+)
+add_custom_target(optix_programs ALL DEPENDS ${OPTIX_PROGRAMS_OUTPUT} SOURCES ${OPTIX_PROGRAMS_SOURCE})
+add_dependencies(MyEngine optix_programs)

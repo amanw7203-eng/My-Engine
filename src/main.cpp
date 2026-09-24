@@ -7,6 +7,10 @@
 #include "Renderer/Texture.h"
 #include "Scene/Scene.h"
 #include "Renderer/ColorSpace.h"
+#include "RayTracing/MeshAccel.h"
+#include "RayTracing/OptixContext.h"
+#include "RayTracing/RayTracer.h"
+#include "RayTracing/SceneAccel.h"
 #include "UI/AssetsPanel.h"
 #include "UI/ImGuiLayer.h"
 #include "UI/SceneHierarchyPanel.h"
@@ -110,6 +114,9 @@ int main(int /*argc*/, char* /*argv*/[])
 
     std::cout << "OpenGL " << glGetString(GL_VERSION) << '\n';
 
+    // Hardware ray tracing. Optional: if it fails, rendering stays OpenGL-only.
+    OptixContext optix;
+
     // Assets are copied next to the executable by the build, so look them up
     // relative to the exe rather than the current working directory.
     const char* basePath = SDL_GetBasePath();
@@ -144,6 +151,25 @@ int main(int /*argc*/, char* /*argv*/[])
         // 50x50 floor with the texture tiled 25 times each way (one tile per
         // 2 units), stretching into the distance to show off mipmapping.
         const Mesh* floorMesh = assets.AddMesh("Floor 50x50", Mesh::CreatePlane(50.0f, 25.0f));
+
+        // Ray tracing copies of the meshes. Built up front so the first
+        // ray traced frame doesn't stall building them.
+        MeshAccelCache meshAccels(optix);
+        if (optix.IsValid())
+        {
+            int built = 0;
+            size_t accelBytes = 0;
+            for (const AssetLibrary::NamedMesh& entry : assets.GetMeshes())
+            {
+                if (const MeshAccel* accel = meshAccels.Get(*entry.mesh))
+                {
+                    ++built;
+                    accelBytes += accel->GetAccelSize();
+                }
+            }
+            std::cout << "Built " << built << '/' << assets.GetMeshes().size()
+                      << " mesh acceleration structures (" << accelBytes << " bytes)\n";
+        }
 
         // Every image in assets/textures. More can be imported from the
         // Assets panel or dropped onto the window.
@@ -203,6 +229,12 @@ int main(int /*argc*/, char* /*argv*/[])
         moonEntity.transform.position = glm::vec3(1.2f, 0.6f, 0.0f);
         moonEntity.transform.scale = glm::vec3(0.35f);
 
+        // Ray tracing: the scene as the ray tracer sees it (rebuilt each
+        // frame while in use) and the renderer. The programs are compiled
+        // by the build into raytracing/ next to the exe.
+        SceneAccel sceneAccel(optix);
+        RayTracer rayTracer(optix, std::filesystem::path(basePath ? basePath : "") / "raytracing/programs.optixir");
+
         SceneHierarchyPanel hierarchyPanel;
         AssetsPanel assetsPanel(window, textureFolder);
 
@@ -213,6 +245,15 @@ int main(int /*argc*/, char* /*argv*/[])
         glm::vec3 clearColor(0.10f, 0.12f, 0.18f);
         bool showImGuiDemo = false;
         bool backfaceCulling = true;
+        // Draw the camera view with the RT cores instead of rasterizing it.
+        bool rayTracingEnabled = false;
+        // Real-time defaults: few paths per frame, relying on reuse of past
+        // frames and the denoiser to hide the noise.
+        int rayTracingBounces = 2;
+        int rayTracingSamples = 1;
+        bool rayTracingDenoise = true;
+        bool rayTracingDenoiseHalf = true;
+        int rayTracingMovingHistory = 16;
 
         // A single directional "sun" light. Its direction is given as two
         // angles: azimuth spins it around the vertical axis, elevation is how
@@ -275,6 +316,45 @@ int main(int /*argc*/, char* /*argv*/[])
                 ImGui::Text("%.1f FPS (%.2f ms)", io.Framerate, 1000.0f / io.Framerate);
                 ImGui::ColorEdit3("Background", &clearColor.x);
                 ImGui::Checkbox("Backface culling", &backfaceCulling);
+
+                ImGui::BeginDisabled(!rayTracer.IsValid());
+                ImGui::Checkbox("Ray tracing", &rayTracingEnabled);
+                ImGui::EndDisabled();
+                ImGui::SetItemTooltip(rayTracer.IsValid()
+                    ? "Render with hardware ray tracing (OptiX): PBR shading, exact\n"
+                      "shadows and ambient light bouncing between surfaces.\n"
+                      "Material textures are not supported yet."
+                    : "Unavailable: needs an NVIDIA RTX GPU (see the console for why it failed)");
+                if (rayTracingEnabled && rayTracer.IsValid())
+                {
+                    ImGui::SliderInt("Bounces", &rayTracingBounces, 0, 8);
+                    ImGui::SetItemTooltip("How many times ambient light bounces between surfaces.\n"
+                                          "0 = flat ambient, like the raster view.");
+                    ImGui::SliderInt("Samples / frame", &rayTracingSamples, 1, 16);
+                    ImGui::SetItemTooltip("Light paths per pixel each frame: less noise while\n"
+                                          "moving, at the cost of speed.");
+
+                    ImGui::BeginDisabled(!rayTracer.IsDenoiserAvailable());
+                    ImGui::Checkbox("Denoise", &rayTracingDenoise);
+                    ImGui::EndDisabled();
+                    ImGui::SetItemTooltip("Clean up the remaining noise with the OptiX AI denoiser.");
+                    ImGui::BeginDisabled(!rayTracingDenoise);
+                    ImGui::Checkbox("Half-res denoise", &rayTracingDenoiseHalf);
+                    ImGui::EndDisabled();
+                    ImGui::SetItemTooltip("Denoise the bounced light at half resolution: about a quarter\n"
+                                          "of the cost, slightly softer bounce light in tight corners.");
+                    ImGui::SliderInt("History while moving", &rayTracingMovingHistory, 1, 64);
+                    ImGui::SetItemTooltip("Past frames each pixel reuses while the camera or objects move.\n"
+                                          "More is smoother but smears changes; fewer adapts faster.");
+
+                    const RayTracer::GpuTimings& timings = rayTracer.GetTimings();
+                    ImGui::Text("GPU: trace %.2f ms, denoise %.2f ms", timings.trace, timings.denoise);
+                    ImGui::Text("Accumulated: %u / %u frames", rayTracer.GetAccumulatedFrames(),
+                                RayTracer::kMaxAccumulatedFrames);
+                    ImGui::SetItemTooltip("While nothing changes, frames keep averaging until the\n"
+                                          "image is final, then the GPU rests. Moving things keeps a\n"
+                                          "short history; changing the lighting starts over.");
+                }
             } },
             { "Help", [&] {
                 ImGui::TextDisabled("WASD move, Q/E down/up, Shift sprint");
@@ -286,6 +366,7 @@ int main(int /*argc*/, char* /*argv*/[])
 
         Uint64 lastTicks = SDL_GetTicksNS();
         bool running = shader.IsValid();
+        bool wasRayTraced = false; // last frame's renderer
 
         while (running)
         {
@@ -375,13 +456,20 @@ int main(int /*argc*/, char* /*argv*/[])
                 camera.sprinting = keys[SDL_SCANCODE_LSHIFT];
                 camera.Move(moveDirection, deltaTime);
             }
-
             // --- Render ---
             int width = 0, height = 0;
             SDL_GetWindowSizeInPixels(window, &width, &height);
             // Recomputed each frame so the image never stretches on resize.
             // (height is 0 while the window is minimised.)
             const float aspect = height > 0 ? static_cast<float>(width) / height : 1.0f;
+
+            // Ray traced frames replace the shadow map and the lit pass; the
+            // pick and selection outline passes still rasterize.
+            const bool rayTraced = rayTracingEnabled && rayTracer.IsValid();
+            // Frames rendered with raster in between leave nothing to reuse.
+            if (rayTraced && !wasRayTraced)
+                rayTracer.ResetHistory();
+            wasRayTraced = rayTraced;
 
             // Point from the sun towards the scene (hence the minus signs:
             // the angles describe where the sun is in the sky).
@@ -404,7 +492,7 @@ int main(int /*argc*/, char* /*argv*/[])
             // material uniforms Scene::Draw sets.
             const ShadowMap::Bounds shadowBounds = ShadowMap::FitToView(camera, aspect, shadowDistance);
             const glm::mat4 lightSpace = shadowMap.GetLightSpaceMatrix(lightDir, shadowBounds);
-            if (shadowsEnabled)
+            if (shadowsEnabled && !rayTraced)
             {
                 shadowMap.BeginRender();
                 depthShader.Bind();
@@ -445,28 +533,52 @@ int main(int /*argc*/, char* /*argv*/[])
             glClearColor(clearColor.r, clearColor.g, clearColor.b, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
-            shader.Bind();
-            shader.SetMat4("uView", view);
-            shader.SetMat4("uProjection", projection);
-            shader.SetVec3("uViewPos", camera.GetPosition());
-            shader.SetVec3("uLightDir", lightDir);
-            // The pickers show sRGB; the shader lights in linear space.
-            shader.SetVec3("uLightColor", SrgbToLinear(lightColor));
-            shader.SetVec3("uAmbientColor", SrgbToLinear(ambientColor));
+            if (rayTraced)
+            {
+                sceneAccel.Build(scene, meshAccels, defaultMaterial);
 
-            shader.SetInt("uShadowsEnabled", shadowsEnabled);
-            shader.SetMat4("uLightSpace", lightSpace);
-            // About 1.5 shadow-map texels, in world units.
-            shader.SetFloat("uShadowNormalOffset",
-                            1.5f * 2.0f * shadowBounds.radius / shadowMap.GetResolution());
-            shader.SetFloat("uShadowDistance", shadowDistance);
+                RayTracer::FrameSettings settings{};
+                settings.view = view;
+                settings.projection = projection;
+                settings.lightDir = lightDir;
+                // The pickers show sRGB; the ray tracer lights in linear space.
+                settings.lightColor = SrgbToLinear(lightColor);
+                settings.ambientColor = SrgbToLinear(ambientColor);
+                settings.background = SrgbToLinear(clearColor);
+                settings.shadowsEnabled = shadowsEnabled;
+                settings.cullBackFaces = backfaceCulling;
+                settings.maxBounces = rayTracingBounces;
+                settings.samplesPerPixel = rayTracingSamples;
+                settings.denoise = rayTracingDenoise;
+                settings.denoiseHalfResolution = rayTracingDenoiseHalf;
+                settings.movingHistoryFrames = rayTracingMovingHistory;
+                rayTracer.Render(sceneAccel, settings, width, height);
+            }
+            else
+            {
+                shader.Bind();
+                shader.SetMat4("uView", view);
+                shader.SetMat4("uProjection", projection);
+                shader.SetVec3("uViewPos", camera.GetPosition());
+                shader.SetVec3("uLightDir", lightDir);
+                // The pickers show sRGB; the shader lights in linear space.
+                shader.SetVec3("uLightColor", SrgbToLinear(lightColor));
+                shader.SetVec3("uAmbientColor", SrgbToLinear(ambientColor));
 
-            // Material maps go in the units Scene binds them to per entity;
-            // the shadow map stays in unit 1 for the whole pass.
-            Scene::SetMaterialSamplers(shader);
-            shader.SetInt("uShadowMap", 1);
-            shadowMap.BindTexture(1);
-            scene.Draw(shader, defaultMaterial, whiteTexture);
+                shader.SetInt("uShadowsEnabled", shadowsEnabled);
+                shader.SetMat4("uLightSpace", lightSpace);
+                // About 1.5 shadow-map texels, in world units.
+                shader.SetFloat("uShadowNormalOffset",
+                                1.5f * 2.0f * shadowBounds.radius / shadowMap.GetResolution());
+                shader.SetFloat("uShadowDistance", shadowDistance);
+
+                // Material maps go in the units Scene binds them to per entity;
+                // the shadow map stays in unit 1 for the whole pass.
+                Scene::SetMaterialSamplers(shader);
+                shader.SetInt("uShadowMap", 1);
+                shadowMap.BindTexture(1);
+                scene.Draw(shader, defaultMaterial, whiteTexture);
+            }
 
             // Selection outline: an orange border around the selected
             // object's silhouette, visible even through things in front.

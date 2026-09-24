@@ -5,6 +5,7 @@
 #include <glm/vec3.hpp>
 
 #include <span>
+#include <vector>
 
 // One vertex as stored in the vertex buffer. Must match the attribute
 // locations in the shaders: 0 = position, 1 = color, 2 = uv, 3 = normal.
@@ -34,6 +35,11 @@ public:
     // Draws the mesh with whichever shader is currently bound.
     void Draw() const;
 
+    // CPU copy of the geometry, kept for the ray tracer, which builds its
+    // own GPU buffers from it.
+    std::span<const Vertex> GetVertices() const { return m_Vertices; }
+    std::span<const unsigned int> GetIndices() const { return m_Indices; }
+
     // A 1x1 upright rectangle centred on the origin, facing +Z, UVs 0..1.
     static Mesh CreateQuad();
 
@@ -52,4 +58,7 @@ private:
     GLuint m_Vbo = 0;
     GLuint m_Ebo = 0;
     GLsizei m_IndexCount = 0;
+
+    std::vector<Vertex> m_Vertices;
+    std::vector<unsigned int> m_Indices;
 };

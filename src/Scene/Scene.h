@@ -4,6 +4,7 @@
 
 #include <glm/glm.hpp>
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -42,6 +43,11 @@ public:
     void Draw(const Shader& shader, const Material& defaultMaterial, const Texture& whiteTexture,
               std::vector<Entity*>* drawnEntities = nullptr) const;
 
+    // Calls fn(entity, worldMatrix) for every visible entity that has a
+    // mesh, parents before children: exactly the entities Draw draws.
+    using DrawableCallback = std::function<void(Entity& entity, const glm::mat4& world)>;
+    void ForEachDrawable(const DrawableCallback& fn) const;
+
     // Points a material shader's texture samplers at the texture units Draw
     // binds each map to. The shader must be bound.
     static void SetMaterialSamplers(const Shader& shader);
@@ -53,15 +59,7 @@ public:
     int CountUsers(const Material* material) const;
 
 private:
-    struct DrawContext
-    {
-        const Shader& shader;
-        const Material& defaultMaterial;
-        const Texture& whiteTexture;
-        std::vector<Entity*>* drawnEntities;
-    };
-
-    void DrawEntity(Entity& entity, const glm::mat4& parentWorld, const DrawContext& context) const;
+    static void VisitDrawables(Entity& entity, const glm::mat4& parentWorld, const DrawableCallback& fn);
 
     // Removes the entity from its parent's (or the root) child list.
     void Detach(Entity& entity);

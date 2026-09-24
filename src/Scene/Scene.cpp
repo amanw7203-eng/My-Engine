@@ -97,48 +97,18 @@ static void BindMaterial(const Shader& shader, const Material& material, const T
 void Scene::Draw(const Shader& shader, const Material& defaultMaterial, const Texture& whiteTexture,
                  std::vector<Entity*>* drawnEntities) const
 {
-    const DrawContext context{ shader, defaultMaterial, whiteTexture, drawnEntities };
-    for (Entity* root : m_Roots)
-        DrawEntity(*root, glm::mat4(1.0f), context);
-}
-
-void Scene::ClearMaterial(const Material* material)
-{
-    for (const std::unique_ptr<Entity>& entity : m_Entities)
-    {
-        if (entity->material == material)
-            entity->material = nullptr;
-    }
-}
-
-int Scene::CountUsers(const Material* material) const
-{
-    return static_cast<int>(std::count_if(m_Entities.begin(), m_Entities.end(),
-                                          [&](const std::unique_ptr<Entity>& e) { return e->material == material; }));
-}
-
-void Scene::DrawEntity(Entity& entity, const glm::mat4& parentWorld, const DrawContext& context) const
-{
-    const Shader& shader = context.shader;
-    if (!entity.visible)
-        return; // hides the whole subtree
-
-    // Walking down the tree, each entity's world matrix is its parent's
-    // world matrix times its own local one.
-    const glm::mat4 world = parentWorld * entity.transform.GetMatrix();
-
-    if (entity.mesh)
+    ForEachDrawable([&](Entity& entity, const glm::mat4& world)
     {
         shader.SetMat4("uModel", world);
         // Inverse-transpose keeps normals perpendicular to the surface when
         // the entity (or a parent) is scaled unevenly.
         shader.SetMat3("uNormalMatrix", glm::transpose(glm::inverse(glm::mat3(world))));
-        const Material& material = entity.material ? *entity.material : context.defaultMaterial;
-        BindMaterial(shader, material, context.whiteTexture);
-        if (context.drawnEntities)
+        const Material& material = entity.material ? *entity.material : defaultMaterial;
+        BindMaterial(shader, material, whiteTexture);
+        if (drawnEntities)
         {
-            context.drawnEntities->push_back(&entity);
-            shader.SetUInt("uEntityId", static_cast<unsigned int>(context.drawnEntities->size()));
+            drawnEntities->push_back(&entity);
+            shader.SetUInt("uEntityId", static_cast<unsigned int>(drawnEntities->size()));
         }
 
         // A negative scale mirrors the mesh, which flips its triangles'
@@ -158,10 +128,44 @@ void Scene::DrawEntity(Entity& entity, const glm::mat4& parentWorld, const DrawC
             glEnable(GL_CULL_FACE);
         if (mirrored)
             glFrontFace(GL_CCW);
+    });
+}
+
+void Scene::ForEachDrawable(const DrawableCallback& fn) const
+{
+    for (Entity* root : m_Roots)
+        VisitDrawables(*root, glm::mat4(1.0f), fn);
+}
+
+void Scene::ClearMaterial(const Material* material)
+{
+    for (const std::unique_ptr<Entity>& entity : m_Entities)
+    {
+        if (entity->material == material)
+            entity->material = nullptr;
     }
+}
+
+int Scene::CountUsers(const Material* material) const
+{
+    return static_cast<int>(std::count_if(m_Entities.begin(), m_Entities.end(),
+                                          [&](const std::unique_ptr<Entity>& e) { return e->material == material; }));
+}
+
+void Scene::VisitDrawables(Entity& entity, const glm::mat4& parentWorld, const DrawableCallback& fn)
+{
+    if (!entity.visible)
+        return; // hides the whole subtree
+
+    // Walking down the tree, each entity's world matrix is its parent's
+    // world matrix times its own local one.
+    const glm::mat4 world = parentWorld * entity.transform.GetMatrix();
+
+    if (entity.mesh)
+        fn(entity, world);
 
     for (Entity* child : entity.m_Children)
-        DrawEntity(*child, world, context);
+        VisitDrawables(*child, world, fn);
 }
 
 void Scene::Detach(Entity& entity)

@@ -6,6 +6,8 @@
 
 Mesh::Mesh(std::span<const Vertex> vertices, std::span<const unsigned int> indices)
     : m_IndexCount(static_cast<GLsizei>(indices.size()))
+    , m_Vertices(vertices.begin(), vertices.end())
+    , m_Indices(indices.begin(), indices.end())
 {
     glGenVertexArrays(1, &m_Vao);
     glGenBuffers(1, &m_Vbo);
@@ -50,6 +52,8 @@ Mesh::Mesh(Mesh&& other) noexcept
     , m_Vbo(std::exchange(other.m_Vbo, 0))
     , m_Ebo(std::exchange(other.m_Ebo, 0))
     , m_IndexCount(std::exchange(other.m_IndexCount, 0))
+    , m_Vertices(std::move(other.m_Vertices))
+    , m_Indices(std::move(other.m_Indices))
 {
 }
 
@@ -62,6 +66,8 @@ Mesh& Mesh::operator=(Mesh&& other) noexcept
         m_Vbo = std::exchange(other.m_Vbo, 0);
         m_Ebo = std::exchange(other.m_Ebo, 0);
         m_IndexCount = std::exchange(other.m_IndexCount, 0);
+        m_Vertices = std::move(other.m_Vertices);
+        m_Indices = std::move(other.m_Indices);
     }
     return *this;
 }
