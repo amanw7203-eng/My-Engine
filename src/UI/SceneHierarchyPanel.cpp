@@ -13,7 +13,7 @@
 // Drag-and-drop payload type for dragging entities around the tree.
 static constexpr const char* kEntityPayload = "ENTITY";
 
-void SceneHierarchyPanel::Draw(Scene& scene, AssetLibrary& assets)
+void SceneHierarchyPanel::Draw(Scene& scene, AssetLibrary& assets, const std::vector<std::string>& scriptNames)
 {
     DrawHierarchy(scene, assets);
 
@@ -22,7 +22,7 @@ void SceneHierarchyPanel::Draw(Scene& scene, AssetLibrary& assets)
         change();
     m_Deferred.clear();
 
-    DrawInspector(scene, assets);
+    DrawInspector(scene, assets, scriptNames);
 }
 
 void SceneHierarchyPanel::DrawHierarchy(Scene& scene, const AssetLibrary& assets)
@@ -155,7 +155,8 @@ void SceneHierarchyPanel::DrawCreateMenuItems(Scene& scene, const AssetLibrary& 
         QueueCreate(scene, "Point Light", nullptr, parent, /*isLight*/ true);
 }
 
-void SceneHierarchyPanel::DrawInspector(const Scene& scene, AssetLibrary& assets)
+void SceneHierarchyPanel::DrawInspector(const Scene& scene, AssetLibrary& assets,
+                                        const std::vector<std::string>& scriptNames)
 {
     ImGui::Begin("Inspector");
 
@@ -195,8 +196,32 @@ void SceneHierarchyPanel::DrawInspector(const Scene& scene, AssetLibrary& assets
     // A light on its own has no surface for a material to apply to.
     if (entity.mesh || !entity.light)
         DrawMaterialSection(scene, assets, entity);
+    DrawScriptSection(entity, scriptNames);
 
     ImGui::End();
+}
+
+void SceneHierarchyPanel::DrawScriptSection(Entity& entity, const std::vector<std::string>& scriptNames)
+{
+    ImGui::SeparatorText("Script");
+    ImGui::PushID("script");
+    if (ImGui::BeginCombo("Script", entity.script.empty() ? "None" : entity.script.c_str()))
+    {
+        if (ImGui::Selectable("None", entity.script.empty()))
+            entity.script.clear();
+        for (const std::string& name : scriptNames)
+        {
+            if (ImGui::Selectable(name.c_str(), entity.script == name))
+                entity.script = name;
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SetItemTooltip("C++ class from assets/scripts/ that runs on this object in Play mode.\n"
+                          "Build Scripts (Ctrl+B) after adding or changing one.");
+    // Picked before, but gone from the DLL (renamed, deleted, or not built).
+    if (!entity.script.empty() && std::find(scriptNames.begin(), scriptNames.end(), entity.script) == scriptNames.end())
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.35f, 1.0f), "Not in the built scripts: it won't run.");
+    ImGui::PopID();
 }
 
 void SceneHierarchyPanel::DrawLightSection(Entity& entity)

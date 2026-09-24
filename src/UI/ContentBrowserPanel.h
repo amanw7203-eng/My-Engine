@@ -87,6 +87,10 @@ private:
     void StartRename(const std::filesystem::path& path);
     void FinishRename(AssetLibrary& assets);
     void CreateFolder();
+    // "New C++ Script": asks for a class name, then writes a script from a
+    // template into assets/scripts/ (the only place the build looks).
+    void DrawNewScriptDialog();
+    bool CreateScript(const std::string& className);
     void OpenImportDialog();
     // Moves `source` into `folder`. Reports problems in the status line.
     void MoveInto(const std::filesystem::path& source, const std::filesystem::path& folder, AssetLibrary& assets);
@@ -123,6 +127,8 @@ private:
     std::string m_RenameBuffer;
     bool m_FocusRename = false;
     std::filesystem::path m_PendingDelete; // waiting for the confirmation dialog
+    bool m_OpenNewScript = false;          // open the New C++ Script dialog
+    std::string m_NewScriptName;
 
     std::map<std::filesystem::path, Thumbnail> m_Thumbnails;
     // Thumbnails dropped from the cache this frame. Freed at the start of the

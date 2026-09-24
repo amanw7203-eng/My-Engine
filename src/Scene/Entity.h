@@ -24,6 +24,7 @@ public:
     Transform transform;              // relative to the parent
     const Mesh* mesh = nullptr;       // not owned; nullptr = nothing drawn
     std::optional<PointLight> light;  // set if the entity is (also) a light
+    std::string script;               // name of the C++ script it runs in Play mode; empty = none
     Material* material = nullptr;     // not owned, may be shared; nullptr = default grey
     bool visible = true;              // false also hides all children
 

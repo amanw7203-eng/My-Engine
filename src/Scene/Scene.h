@@ -66,6 +66,8 @@ public:
 
     // True if `entity` is in the scene (not destroyed).
     bool Contains(const Entity* entity) const;
+    // The first entity (in creation order) with this name, or nullptr.
+    Entity* FindEntity(const std::string& name) const;
 
     // --- Undo support ---
     // One entity's editable state and its place in the tree.
@@ -78,6 +80,7 @@ public:
         const Mesh* mesh = nullptr;
         Material* material = nullptr;
         std::optional<PointLight> light;
+        std::string script;
         bool visible = true;
 
         bool operator==(const EntityState&) const = default;

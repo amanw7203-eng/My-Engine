@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <utility>
 
 using Platform::FromUtf8;
 using Platform::IsWithin;
@@ -381,6 +382,7 @@ void ContentBrowserPanel::Draw(AssetLibrary& assets)
     }
 
     DrawDeleteConfirmation(assets);
+    DrawNewScriptDialog();
     ImGui::End();
 }
 
@@ -517,6 +519,11 @@ void ContentBrowserPanel::DrawGrid(AssetLibrary& assets)
     {
         if (ImGui::MenuItem("New Folder"))
             CreateFolder();
+        if (ImGui::MenuItem("New C++ Script..."))
+        {
+            m_OpenNewScript = true;
+            m_NewScriptName = "NewScript";
+        }
         if (ImGui::MenuItem("Import Files..."))
             OpenImportDialog();
         ImGui::Separator();
@@ -832,6 +839,83 @@ void ContentBrowserPanel::CreateFolder()
     }
     Refresh();
     StartRename(folder); // name it straight away
+}
+
+void ContentBrowserPanel::DrawNewScriptDialog()
+{
+    if (std::exchange(m_OpenNewScript, false))
+        ImGui::OpenPopup("New C++ Script");
+    if (!ImGui::BeginPopupModal("New C++ Script", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    // A C++ class name: letters, digits and _, not starting with a digit.
+    const std::string& name = m_NewScriptName;
+    const bool valid = !name.empty() && !std::isdigit(static_cast<unsigned char>(name[0])) &&
+                       std::all_of(name.begin(), name.end(), [](char c) {
+                           return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+                       });
+
+    ImGui::TextUnformatted("Class name:");
+    if (ImGui::IsWindowAppearing())
+        ImGui::SetKeyboardFocusHere();
+    const bool entered = ImGui::InputText("##name", &m_NewScriptName, ImGuiInputTextFlags_EnterReturnsTrue);
+    if (!valid)
+        ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "Letters, digits and _ only, not starting with a digit");
+    ImGui::TextDisabled("Created in scripts/ as %s.cpp", name.c_str());
+
+    ImGui::BeginDisabled(!valid);
+    if ((ImGui::Button("Create") || (entered && valid)) && CreateScript(name))
+        ImGui::CloseCurrentPopup();
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_Escape))
+        ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
+bool ContentBrowserPanel::CreateScript(const std::string& className)
+{
+    // The build compiles assets/scripts/ (and folders inside it) only.
+    const std::filesystem::path scriptsRoot = m_Root / "scripts";
+    const std::filesystem::path folder = Platform::IsWithin(m_Current, scriptsRoot) ? m_Current : scriptsRoot;
+    const std::filesystem::path file = folder / FromUtf8(className + ".cpp");
+
+    std::error_code error;
+    std::filesystem::create_directories(folder, error);
+    if (std::filesystem::exists(file, error))
+    {
+        SetStatus(className + ".cpp already exists", true);
+        return false;
+    }
+    std::FILE* out = nullptr;
+    if (_wfopen_s(&out, file.c_str(), L"wb") != 0 || !out)
+    {
+        SetStatus("Couldn't create " + className + ".cpp", true);
+        return false;
+    }
+    const std::string source =
+        "#include \"Scripting/Script.h\"\n"
+        "\n"
+        "class " + className + " : public Script\n"
+        "{\n"
+        "public:\n"
+        "    void OnStart() override\n"
+        "    {\n"
+        "    }\n"
+        "\n"
+        "    void OnUpdate(float deltaTime) override\n"
+        "    {\n"
+        "        (void)deltaTime;\n"
+        "    }\n"
+        "};\n"
+        "REGISTER_SCRIPT(" + className + ")\n";
+    std::fwrite(source.data(), 1, source.size(), out);
+    std::fclose(out);
+
+    Navigate(folder);
+    m_Selected = file;
+    SetStatus("Created " + className + ".cpp: edit it, then Build Scripts (Ctrl+B) to use it", false);
+    return true;
 }
 
 void ContentBrowserPanel::OpenImportDialog()

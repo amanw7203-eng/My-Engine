@@ -42,6 +42,13 @@ bool Scene::Contains(const Entity* entity) const
                        [&](const std::unique_ptr<Entity>& e) { return e.get() == entity; });
 }
 
+Entity* Scene::FindEntity(const std::string& name) const
+{
+    const auto it = std::find_if(m_Entities.begin(), m_Entities.end(),
+                                 [&](const std::unique_ptr<Entity>& e) { return e->name == name; });
+    return it != m_Entities.end() ? it->get() : nullptr;
+}
+
 Scene::State Scene::CaptureState() const
 {
     State state;
@@ -57,6 +64,7 @@ Scene::State Scene::CaptureState() const
         s.mesh = entity.mesh;
         s.material = entity.material;
         s.light = entity.light;
+        s.script = entity.script;
         s.visible = entity.visible;
         for (Entity* child : entity.m_Children)
             visit(*child);
@@ -97,6 +105,7 @@ void Scene::RestoreState(const State& state)
         entity.mesh = s.mesh;
         entity.material = s.material;
         entity.light = s.light;
+        entity.script = s.script;
         entity.visible = s.visible;
         entity.m_Parent = s.parent;
         (s.parent ? s.parent->m_Children : m_Roots).push_back(&entity);

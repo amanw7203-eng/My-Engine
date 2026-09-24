@@ -44,6 +44,18 @@ void Camera::Rotate(float dx, float dy)
     m_Pitch = std::clamp(m_Pitch, -89.0f, 89.0f);
 }
 
+void Camera::LookAt(const glm::vec3& target)
+{
+    const glm::vec3 offset = target - m_Position;
+    const float length = glm::length(offset);
+    if (length < 0.0001f)
+        return; // already there: any direction would do, so keep the current one
+    // The inverse of GetForward: pitch from the height, yaw around it.
+    const glm::vec3 direction = offset / length;
+    m_Pitch = std::clamp(glm::degrees(std::asin(std::clamp(direction.y, -1.0f, 1.0f))), -89.0f, 89.0f);
+    m_Yaw = glm::degrees(std::atan2(direction.z, direction.x));
+}
+
 glm::mat4 Camera::GetViewMatrix() const
 {
     return glm::lookAt(m_Position, m_Position + GetForward(), kWorldUp);

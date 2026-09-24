@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <string>
 #include <vector>
 
 class AssetLibrary;
@@ -16,7 +17,8 @@ class SceneHierarchyPanel
 public:
     // Call between ImGuiLayer::BeginFrame and EndFrame. The library isn't
     // const because the Inspector can create materials.
-    void Draw(Scene& scene, AssetLibrary& assets);
+    // `scriptNames`: the scripts that can be picked in the Inspector.
+    void Draw(Scene& scene, AssetLibrary& assets, const std::vector<std::string>& scriptNames);
 
     Entity* GetSelected() const { return m_Selected; }
     // e.g. from clicking the entity in the 3D view; nullptr deselects.
@@ -26,9 +28,10 @@ private:
     void DrawHierarchy(Scene& scene, const AssetLibrary& assets);
     void DrawEntityNode(Scene& scene, const AssetLibrary& assets, Entity& entity);
     void DrawCreateMenuItems(Scene& scene, const AssetLibrary& assets, Entity* parent);
-    void DrawInspector(const Scene& scene, AssetLibrary& assets);
+    void DrawInspector(const Scene& scene, AssetLibrary& assets, const std::vector<std::string>& scriptNames);
     void DrawMaterialSection(const Scene& scene, AssetLibrary& assets, Entity& entity);
     void DrawLightSection(Entity& entity);
+    void DrawScriptSection(Entity& entity, const std::vector<std::string>& scriptNames);
 
     // isLight: the new entity is a point light.
     void QueueCreate(Scene& scene, const char* name, const Mesh* mesh, Entity* parent, bool isLight = false);

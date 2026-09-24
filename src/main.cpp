@@ -7,6 +7,7 @@
 #include "Renderer/ShadowMap.h"
 #include "Renderer/Texture.h"
 #include "Scene/Scene.h"
+#include "Scripting/ScriptSystem.h"
 #include "Renderer/ColorSpace.h"
 #include "RayTracing/MeshAccel.h"
 #include "RayTracing/OptixContext.h"
@@ -14,6 +15,7 @@
 #include "RayTracing/SceneAccel.h"
 #include "RayTracing/TextureCache.h"
 #include "UI/AssetsPanel.h"
+#include "UI/Console.h"
 #include "UI/ContentBrowserPanel.h"
 #include "UI/ImGuiLayer.h"
 #include "UI/SceneHierarchyPanel.h"
@@ -252,6 +254,7 @@ int main(int /*argc*/, char* /*argv*/[])
         cubeEntity.mesh = cubeMesh;
         cubeEntity.material = orangeMaterial;
         cubeEntity.transform.position = glm::vec3(2.0f, 0.0f, 0.0f);
+        cubeEntity.script = "Rotator"; // assets/scripts/Rotator.cpp: spins in Play mode
 
         // A child of the cube: rotate or move the cube and this follows.
         Entity& moonEntity = scene.CreateEntity("Moon", &cubeEntity);
@@ -265,6 +268,7 @@ int main(int /*argc*/, char* /*argv*/[])
         Entity& lampEntity = scene.CreateEntity("Point Light");
         lampEntity.light = PointLight{ glm::vec3(1.0f, 0.6f, 0.3f), 1.5f, 6.0f, true };
         lampEntity.transform.position = glm::vec3(1.0f, 0.0f, 0.9f);
+        lampEntity.script = "Bobber"; // floats up and down in Play mode
 
         // Ray tracing: the scene as the ray tracer sees it (rebuilt each
         // frame while in use) and the renderer. The programs are compiled
@@ -280,6 +284,38 @@ int main(int /*argc*/, char* /*argv*/[])
 
         // Back and a little to the right so the whole scene is in view.
         Camera camera(glm::vec3(1.0f, 0.5f, 6.0f));
+
+        // Gameplay scripts (C++ classes in assets/scripts/, built into
+        // GameScripts.dll next to the exe) and the Console they log to.
+        Console console;
+        ScriptSystem scripts(scene, assets, camera, console,
+                             std::filesystem::path(basePath ? basePath : "") / "GameScripts.dll",
+                             { MYENGINE_CMAKE_COMMAND, MYENGINE_BUILD_DIR, MYENGINE_BUILD_CONFIG });
+
+        // Play mode: the scene runs its scripts. Everything they change (the
+        // scene, materials, the camera) goes back to how it was on Stop.
+        struct PlaySnapshot
+        {
+            Scene::State scene;
+            AssetLibrary::State assets;
+            Camera camera;
+        };
+        std::optional<PlaySnapshot> playSnapshot;
+        const auto startPlay = [&] {
+            playSnapshot = PlaySnapshot{ scene.CaptureState(), assets.CaptureState(), camera };
+            console.Log(Console::Level::Info, "--- Play ---");
+            scripts.BeginPlay();
+        };
+        const auto stopPlay = [&] {
+            scripts.EndPlay();
+            scene.RestoreState(playSnapshot->scene);
+            assets.RestoreState(playSnapshot->assets);
+            camera = playSnapshot->camera;
+            playSnapshot.reset();
+            console.Log(Console::Level::Info, "--- Stopped ---");
+            if (!scene.Contains(hierarchyPanel.GetSelected()))
+                hierarchyPanel.SetSelected(nullptr);
+        };
 
         // Settings the UI can edit.
         glm::vec3 clearColor(0.10f, 0.12f, 0.18f);
@@ -404,6 +440,7 @@ int main(int /*argc*/, char* /*argv*/[])
                 ImGui::TextDisabled("Hold right mouse or Left Alt to look");
                 ImGui::TextDisabled("Ctrl+Z undo, Ctrl+Y (or Ctrl+Shift+Z) redo");
                 ImGui::TextDisabled("G / R / T: move / rotate / scale, Ctrl snaps");
+                ImGui::TextDisabled("Ctrl+P play / stop, Ctrl+B build scripts");
                 ImGui::TextDisabled("Esc quit");
                 ImGui::Checkbox("Show ImGui demo", &showImGuiDemo);
             } },
@@ -485,16 +522,85 @@ int main(int /*argc*/, char* /*argv*/[])
 
             // Undo/redo first, so every panel draws the restored state. The
             // selection goes if the undo took the selected entity away.
-            if (undoHistory.HandleShortcuts() && !scene.Contains(hierarchyPanel.GetSelected()))
+            // (Not while playing: what the scripts do isn't an edit.)
+            if (!scripts.IsPlaying() && undoHistory.HandleShortcuts() && !scene.Contains(hierarchyPanel.GetSelected()))
                 hierarchyPanel.SetSelected(nullptr);
+
+            // Ctrl+P plays / stops, Ctrl+B builds the scripts.
+            if (!ImGui::GetIO().WantTextInput)
+            {
+                if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_P))
+                    scripts.IsPlaying() ? stopPlay() : startPlay();
+                if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_B))
+                    scripts.StartBuild();
+            }
 
             // Load images picked in the file dialog or dropped on the window.
             assets.ProcessQueuedImports();
 
-            hierarchyPanel.Draw(scene, assets);
+            hierarchyPanel.Draw(scene, assets, scripts.GetScriptNames());
             assetsPanel.Draw(assets, scene, hierarchyPanel.GetSelected());
             contentBrowser.Draw(assets);
+            console.Draw();
             settingsDrawer.Draw(ui.GetViewportMin(), ui.GetViewportMax(), settingsTabs);
+
+            // Play / Stop and Build Scripts, floating at the top middle of
+            // the 3D view.
+            {
+                const ImVec2 viewMin = ui.GetViewportMin();
+                const ImVec2 viewMax = ui.GetViewportMax();
+                const float pad = ImGui::GetStyle().WindowPadding.y;
+                ImGui::SetNextWindowPos(ImVec2((viewMin.x + viewMax.x) * 0.5f, viewMin.y + pad), ImGuiCond_Always,
+                                        ImVec2(0.5f, 0.0f));
+                ImGui::SetNextWindowBgAlpha(0.85f);
+                const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoDocking
+                                             | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings
+                                             | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav
+                                             | ImGuiWindowFlags_NoMove;
+                if (ImGui::Begin("##PlayToolbar", nullptr, flags))
+                {
+                    const bool playing = scripts.IsPlaying();
+                    ImGui::PushStyleColor(ImGuiCol_Button, playing ? ImVec4(0.65f, 0.2f, 0.2f, 1.0f)
+                                                                   : ImVec4(0.2f, 0.5f, 0.25f, 1.0f));
+                    if (ImGui::Button(playing ? "Stop" : "Play", ImVec2(ImGui::GetFontSize() * 4.0f, 0.0f)))
+                        playing ? stopPlay() : startPlay();
+                    ImGui::PopStyleColor();
+                    ImGui::SetItemTooltip(playing ? "Stop, and put everything back as it was (Ctrl+P)"
+                                                  : "Run the scripts (Ctrl+P)");
+
+                    ImGui::SameLine();
+                    ImGui::BeginDisabled(scripts.IsBuilding());
+                    if (ImGui::Button(scripts.IsBuilding() ? "Building..." : "Build Scripts"))
+                        scripts.StartBuild();
+                    ImGui::EndDisabled();
+                    ImGui::SetItemTooltip("Compile assets/scripts/ and reload them (Ctrl+B).\n"
+                                          "The build output is in the Console.");
+
+                    ImGui::SameLine();
+                    switch (scripts.GetLastBuildResult())
+                    {
+                    case ScriptSystem::BuildResult::Succeeded:
+                        ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.0f), "Built");
+                        break;
+                    case ScriptSystem::BuildResult::Failed:
+                        ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "Build failed");
+                        break;
+                    case ScriptSystem::BuildResult::None:
+                        if (!scripts.IsLoaded())
+                            ImGui::TextDisabled("No scripts loaded");
+                        else
+                            ImGui::TextDisabled("%d scripts", static_cast<int>(scripts.GetScriptNames().size()));
+                        break;
+                    }
+                }
+                ImGui::End();
+
+                // A frame around the 3D view while playing, so it's clear
+                // that changes now won't last.
+                if (scripts.IsPlaying())
+                    ImGui::GetBackgroundDrawList()->AddRect(viewMin, viewMax, IM_COL32(70, 200, 90, 255), 0.0f, 0,
+                                                            3.0f);
+            }
 
             if (showImGuiDemo)
                 ImGui::ShowDemoWindow(&showImGuiDemo);
@@ -516,6 +622,13 @@ int main(int /*argc*/, char* /*argv*/[])
                 camera.sprinting = keys[SDL_SCANCODE_LSHIFT];
                 camera.Move(moveDirection, deltaTime);
             }
+
+            // Swap in a rebuilt scripts DLL, then run the scripts (while
+            // playing). A script that crashed stops play.
+            scripts.PollReload();
+            scripts.Update(deltaTime, !ui.WantsKeyboard());
+            if (scripts.TakeStopRequest() && scripts.IsPlaying())
+                stopPlay();
             // --- Render ---
             int width = 0, height = 0;
             SDL_GetWindowSizeInPixels(window, &width, &height);
@@ -741,7 +854,10 @@ int main(int /*argc*/, char* /*argv*/[])
 
             // Record an undo step if this frame's edits changed anything
             // (waits while a gizmo handle is still being dragged).
-            undoHistory.Update(transformGizmo.IsDragging());
+            // Not while playing: Stop reverts to the state before Play, which
+            // is still the last step.
+            if (!scripts.IsPlaying())
+                undoHistory.Update(transformGizmo.IsDragging());
 
             // UI last, so it draws on top of the scene.
             ui.EndFrame();

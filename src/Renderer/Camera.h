@@ -22,6 +22,10 @@ public:
     const glm::vec3& GetPosition() const { return m_Position; }
     glm::vec3 GetForward() const; // unit vector the camera looks along
 
+    void SetPosition(const glm::vec3& position) { m_Position = position; }
+    // Turns the camera to face `target` (no roll, like the mouse look).
+    void LookAt(const glm::vec3& target);
+
     float moveSpeed = 3.0f;          // units per second
     float sprintMultiplier = 3.0f;   // applied while sprinting
     float mouseSensitivity = 0.1f;   // degrees per pixel

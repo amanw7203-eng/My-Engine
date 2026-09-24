@@ -118,8 +118,10 @@ add_executable(MyEngine
     src/Renderer/Texture.cpp
     src/Scene/Entity.cpp
     src/Scene/Scene.cpp
+    src/Scripting/ScriptSystem.cpp
     src/UI/AssetsPanel.cpp
     src/UI/AssetWidgets.cpp
+    src/UI/Console.cpp
     src/UI/ContentBrowserPanel.cpp
     src/UI/ImGuiLayer.cpp
     src/UI/SceneHierarchyPanel.cpp
@@ -134,6 +136,14 @@ target_include_directories(MyEngine PRIVATE src)
 # (changes there would be lost on the next build).
 target_compile_definitions(MyEngine PRIVATE MYENGINE_SOURCE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets")
 
+# How the editor rebuilds the scripts DLL (Build Scripts):
+# `cmake --build <build dir> --config <this config> --target GameScripts`.
+target_compile_definitions(MyEngine PRIVATE
+    MYENGINE_CMAKE_COMMAND="${CMAKE_COMMAND}"
+    MYENGINE_BUILD_DIR="${CMAKE_BINARY_DIR}"
+    MYENGINE_BUILD_CONFIG="$<CONFIG>"
+)
+
 # Recycle Bin and "Show in Explorer" (SHFileOperationW, ShellExecuteW).
 if(WIN32)
     target_link_libraries(MyEngine PRIVATE shell32)
@@ -145,6 +155,26 @@ if(MSVC)
 else()
     target_compile_options(MyEngine PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+
+# --- Gameplay scripts -------------------------------------------------------
+# Every .cpp under assets/scripts/ is compiled into GameScripts.dll (next to
+# MyEngine.exe), which the engine loads, and reloads whenever it is rebuilt,
+# even while the editor runs. Scripts see only Scripting/Script.h and the
+# plain scene types; the engine's services reach them through the function
+# table in ScriptApi. New files are picked up by the next build
+# (CONFIGURE_DEPENDS re-runs the glob).
+file(GLOB_RECURSE GAME_SCRIPT_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/assets/scripts/*.cpp)
+add_library(GameScripts SHARED
+    src/Scripting/ScriptModule.cpp
+    src/Scene/Entity.cpp
+    ${GAME_SCRIPT_SOURCES}
+)
+target_include_directories(GameScripts PRIVATE src)
+target_link_libraries(GameScripts PRIVATE glm::glm SDL3::Headers)
+if(MSVC)
+    target_compile_options(GameScripts PRIVATE /W4 /permissive-)
+endif()
+add_dependencies(MyEngine GameScripts)
 
 # Copy assets/ next to the executable on every build (only changed files),
 # so the engine finds them no matter which folder it is started from.

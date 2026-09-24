@@ -54,8 +54,8 @@ void ImGuiLayer::BeginFrame()
                                                              ImGuiDockNodeFlags_PassthruCentralNode);
 
     // Default layout, only when imgui.ini has no saved one: Inspector on the
-    // left, Hierarchy above Assets on the right, Content Browser along the
-    // bottom, 3D viewport in the middle.
+    // left, Hierarchy above Assets on the right, Content Browser and Console
+    // along the bottom, 3D viewport in the middle.
     ImGuiDockNode* dockspace = ImGui::DockBuilderGetNode(dockspaceId);
     if (dockspace && dockspace->IsLeafNode() && dockspace->Windows.empty())
     {
@@ -69,6 +69,7 @@ void ImGuiLayer::BeginFrame()
         ImGui::DockBuilderDockWindow("Hierarchy", rightTopId);
         ImGui::DockBuilderDockWindow("Assets", rightBottomId);
         ImGui::DockBuilderDockWindow("Content Browser", bottomId);
+        ImGui::DockBuilderDockWindow("Console", bottomId); // a tab beside it
         ImGui::DockBuilderFinish(dockspaceId);
     }
     // A layout saved before the Content Browser existed: the first time it
