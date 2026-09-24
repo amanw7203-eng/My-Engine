@@ -45,6 +45,17 @@ bool TextureSlotPicker(const char* id, const Texture*& slot, const AssetLibrary&
                 slot = *static_cast<const Texture* const*>(payload->Data);
                 changed = true;
             }
+            // An image file from the Content Browser (other files don't fit).
+            const ImGuiPayload* dragged = ImGui::GetDragDropPayload();
+            if (dragged && dragged->IsDataType(kAssetFilePayload) &&
+                static_cast<const AssetFilePayload*>(dragged->Data)->texture)
+            {
+                if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAssetFilePayload))
+                {
+                    slot = static_cast<const AssetFilePayload*>(payload->Data)->texture;
+                    changed = true;
+                }
+            }
             ImGui::EndDragDropTarget();
         }
     }

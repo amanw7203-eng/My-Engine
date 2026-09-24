@@ -89,6 +89,7 @@ target_link_libraries(optix INTERFACE CUDA::cudart_static)
 add_executable(MyEngine
     src/main.cpp
     src/Assets/AssetLibrary.cpp
+    src/Platform/FileSystem.cpp
     src/RayTracing/CudaBuffer.cpp
     src/RayTracing/Denoiser.cpp
     src/RayTracing/InteropTexture.cpp
@@ -106,12 +107,23 @@ add_executable(MyEngine
     src/Scene/Scene.cpp
     src/UI/AssetsPanel.cpp
     src/UI/AssetWidgets.cpp
+    src/UI/ContentBrowserPanel.cpp
     src/UI/ImGuiLayer.cpp
     src/UI/SceneHierarchyPanel.cpp
     src/UI/SideDrawer.cpp
 )
 
 target_include_directories(MyEngine PRIVATE src)
+
+# The project's own assets folder. The editor's Content Browser works on the
+# real files here, not on the copy next to the exe that the build makes
+# (changes there would be lost on the next build).
+target_compile_definitions(MyEngine PRIVATE MYENGINE_SOURCE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets")
+
+# Recycle Bin and "Show in Explorer" (SHFileOperationW, ShellExecuteW).
+if(WIN32)
+    target_link_libraries(MyEngine PRIVATE shell32)
+endif()
 target_link_libraries(MyEngine PRIVATE SDL3::SDL3 OpenGL::GL glad glm::glm stb_image imgui optix)
 
 if(MSVC)

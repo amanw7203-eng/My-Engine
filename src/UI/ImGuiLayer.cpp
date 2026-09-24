@@ -54,7 +54,8 @@ void ImGuiLayer::BeginFrame()
                                                              ImGuiDockNodeFlags_PassthruCentralNode);
 
     // Default layout, only when imgui.ini has no saved one: Inspector on the
-    // left, Hierarchy above Assets on the right, 3D viewport in the middle.
+    // left, Hierarchy above Assets on the right, Content Browser along the
+    // bottom, 3D viewport in the middle.
     ImGuiDockNode* dockspace = ImGui::DockBuilderGetNode(dockspaceId);
     if (dockspace && dockspace->IsLeafNode() && dockspace->Windows.empty())
     {
@@ -62,11 +63,25 @@ void ImGuiLayer::BeginFrame()
         const ImGuiID leftId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Left, 0.22f, nullptr, &centerId);
         ImGuiID rightTopId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Right, 0.28f, nullptr, &centerId);
         const ImGuiID rightBottomId = ImGui::DockBuilderSplitNode(rightTopId, ImGuiDir_Down, 0.55f, nullptr, &rightTopId);
+        const ImGuiID bottomId = ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Down, 0.3f, nullptr, &centerId);
 
         ImGui::DockBuilderDockWindow("Inspector", leftId);
         ImGui::DockBuilderDockWindow("Hierarchy", rightTopId);
         ImGui::DockBuilderDockWindow("Assets", rightBottomId);
+        ImGui::DockBuilderDockWindow("Content Browser", bottomId);
         ImGui::DockBuilderFinish(dockspaceId);
+    }
+    // A layout saved before the Content Browser existed: the first time it
+    // appears, give it a strip along the bottom of the 3D view rather than
+    // leaving it floating.
+    else if (!ImGui::FindWindowSettingsByID(ImHashStr("Content Browser")) && !ImGui::FindWindowByName("Content Browser"))
+    {
+        if (ImGuiDockNode* central = ImGui::DockBuilderGetCentralNode(dockspaceId))
+        {
+            const ImGuiID bottomId = ImGui::DockBuilderSplitNode(central->ID, ImGuiDir_Down, 0.3f, nullptr, nullptr);
+            ImGui::DockBuilderDockWindow("Content Browser", bottomId);
+            ImGui::DockBuilderFinish(dockspaceId);
+        }
     }
 
     // Remember where the 3D view is, for overlays drawn on top of it.

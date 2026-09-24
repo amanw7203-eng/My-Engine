@@ -10,6 +10,15 @@ struct Material;
 inline constexpr const char* kTexturePayload = "TEXTURE"; // const Texture*
 inline constexpr const char* kMaterialPayload = "MATERIAL"; // Material*
 
+// A file or folder dragged from the Content Browser. An image is imported
+// as the drag starts, so it can be dropped onto a texture slot too.
+inline constexpr const char* kAssetFilePayload = "ASSET_FILE"; // AssetFilePayload
+struct AssetFilePayload
+{
+    char path[1024];        // UTF-8, null-terminated
+    const Texture* texture; // the imported image, or nullptr if not an image
+};
+
 // A texture's image, `size` pixels square (stretched to fit).
 void TextureThumbnail(const Texture& texture, float size);
 

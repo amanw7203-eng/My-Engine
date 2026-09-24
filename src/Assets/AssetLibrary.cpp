@@ -1,5 +1,7 @@
 #include "Assets/AssetLibrary.h"
 
+#include "Platform/FileSystem.h"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -15,7 +17,7 @@ static std::string ToLower(std::string text)
 }
 
 // Image formats stb_image can read that are worth offering.
-static bool IsImageFile(const std::filesystem::path& path)
+bool AssetLibrary::IsImageFile(const std::filesystem::path& path)
 {
     static constexpr std::array<std::string_view, 5> kExtensions = { ".png", ".jpg", ".jpeg", ".tga", ".bmp" };
     const std::string extension = ToLower(path.extension().string());
@@ -140,6 +142,9 @@ void AssetLibrary::QueueImport(std::filesystem::path path)
 
 void AssetLibrary::ProcessQueuedImports()
 {
+    // Last frame's UI has been drawn, so nothing refers to these any more.
+    m_RemovedTextures.clear();
+
     std::vector<std::filesystem::path> queued;
     {
         std::lock_guard lock(m_QueueMutex);
@@ -156,6 +161,50 @@ void AssetLibrary::ProcessQueuedImports()
     }
 }
 
+Texture* AssetLibrary::FindTexture(const std::filesystem::path& path) const
+{
+    for (const NamedTexture& entry : m_Textures)
+    {
+        const std::filesystem::path& file = entry.texture->GetPath();
+        if (!file.empty() && Platform::IsWithin(file, path) && Platform::IsWithin(path, file))
+            return entry.texture.get();
+    }
+    return nullptr;
+}
+
+void AssetLibrary::OnPathMoved(const std::filesystem::path& from, const std::filesystem::path& to)
+{
+    const std::filesystem::path oldBase = Platform::Normalized(from);
+    const std::filesystem::path newBase = Platform::Normalized(to);
+    for (NamedTexture& entry : m_Textures)
+    {
+        const std::filesystem::path& file = entry.texture->GetPath();
+        if (file.empty() || !Platform::IsWithin(file, oldBase))
+            continue;
+        // The part of the path below the moved file/folder stays the same.
+        entry.texture->SetPath(newBase / Platform::Normalized(file).lexically_relative(oldBase));
+    }
+}
+
+int AssetLibrary::CountTexturesUnder(const std::filesystem::path& path) const
+{
+    return static_cast<int>(std::count_if(m_Textures.begin(), m_Textures.end(), [&](const NamedTexture& entry) {
+        return !entry.texture->GetPath().empty() && Platform::IsWithin(entry.texture->GetPath(), path);
+    }));
+}
+
+void AssetLibrary::RemoveTexturesUnder(const std::filesystem::path& path)
+{
+    std::vector<const Texture*> doomed;
+    for (const NamedTexture& entry : m_Textures)
+    {
+        if (!entry.texture->GetPath().empty() && Platform::IsWithin(entry.texture->GetPath(), path))
+            doomed.push_back(entry.texture.get());
+    }
+    for (const Texture* texture : doomed)
+        RemoveTexture(texture);
+}
+
 void AssetLibrary::RemoveTexture(const Texture* texture)
 {
     if (!texture)
@@ -169,7 +218,16 @@ void AssetLibrary::RemoveTexture(const Texture* texture)
                 *slot = nullptr;
         }
     }
-    std::erase_if(m_Textures, [&](const NamedTexture& entry) { return entry.texture.get() == texture; });
+    // Parked rather than destroyed: see the header.
+    for (auto it = m_Textures.begin(); it != m_Textures.end(); ++it)
+    {
+        if (it->texture.get() == texture)
+        {
+            m_RemovedTextures.push_back(std::move(it->texture));
+            m_Textures.erase(it);
+            break;
+        }
+    }
 }
 
 Material* AssetLibrary::CreateMaterial(const std::string& name)

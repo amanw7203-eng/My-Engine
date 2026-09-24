@@ -12,6 +12,7 @@
 #include "RayTracing/RayTracer.h"
 #include "RayTracing/SceneAccel.h"
 #include "UI/AssetsPanel.h"
+#include "UI/ContentBrowserPanel.h"
 #include "UI/ImGuiLayer.h"
 #include "UI/SceneHierarchyPanel.h"
 #include "UI/SideDrawer.h"
@@ -123,6 +124,16 @@ int main(int /*argc*/, char* /*argv*/[])
     const std::filesystem::path assetDir =
         std::filesystem::path(basePath ? basePath : "") / "assets";
 
+    // The asset files the editor works on (textures, and everything the
+    // Content Browser shows). In a development build that is the project's
+    // own assets folder, so files added, renamed or deleted in the editor
+    // change the project rather than the build's copy.
+    std::filesystem::path contentRoot = assetDir;
+#ifdef MYENGINE_SOURCE_ASSETS_DIR
+    if (std::error_code error; std::filesystem::is_directory(u8"" MYENGINE_SOURCE_ASSETS_DIR, error))
+        contentRoot = u8"" MYENGINE_SOURCE_ASSETS_DIR;
+#endif
+
     int exitCode = 0;
 
     // Everything that owns GL objects lives in this scope, so it is destroyed
@@ -173,7 +184,7 @@ int main(int /*argc*/, char* /*argv*/[])
 
         // Every image in assets/textures. More can be imported from the
         // Assets panel or dropped onto the window.
-        const std::filesystem::path textureFolder = assetDir / "textures";
+        const std::filesystem::path textureFolder = contentRoot / "textures";
         assets.ImportFolder(textureFolder);
         const Texture* checker = assets.ImportTexture(textureFolder / "checker.png");
 
@@ -237,6 +248,7 @@ int main(int /*argc*/, char* /*argv*/[])
 
         SceneHierarchyPanel hierarchyPanel;
         AssetsPanel assetsPanel(window, textureFolder);
+        ContentBrowserPanel contentBrowser(window, contentRoot);
 
         // Back and a little to the right so the whole scene is in view.
         Camera camera(glm::vec3(1.0f, 0.5f, 6.0f));
@@ -389,10 +401,18 @@ int main(int /*argc*/, char* /*argv*/[])
 
                 if (event.type == SDL_EVENT_QUIT)
                     running = false;
-                // Image files (or folders) dragged from Explorer onto the
-                // window are imported as textures. SDL gives UTF-8 paths.
+                // Files dragged from Explorer: dropped onto the Content
+                // Browser they are copied into the project; anywhere else,
+                // images (or folders of them) are imported as textures where
+                // they are. SDL gives UTF-8 paths.
                 else if (event.type == SDL_EVENT_DROP_FILE && event.drop.data)
-                    assets.QueueImport(std::filesystem::path(reinterpret_cast<const char8_t*>(event.drop.data)));
+                {
+                    std::filesystem::path dropped(reinterpret_cast<const char8_t*>(event.drop.data));
+                    if (contentBrowser.Contains(event.drop.x, event.drop.y))
+                        contentBrowser.QueueCopyIn(std::move(dropped));
+                    else
+                        assets.QueueImport(std::move(dropped));
+                }
                 else if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE && !ui.WantsKeyboard())
                     running = false;
                 // Left Alt toggles mouse look on/off (ignoring key repeat, so
@@ -434,6 +454,7 @@ int main(int /*argc*/, char* /*argv*/[])
 
             hierarchyPanel.Draw(scene, assets);
             assetsPanel.Draw(assets, scene, hierarchyPanel.GetSelected());
+            contentBrowser.Draw(assets);
             settingsDrawer.Draw(ui.GetViewportMin(), ui.GetViewportMax(), settingsTabs);
 
             if (showImGuiDemo)

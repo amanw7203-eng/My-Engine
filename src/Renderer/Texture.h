@@ -49,6 +49,8 @@ public:
 
     // The file it was loaded from; empty for textures made from raw pixels.
     const std::filesystem::path& GetPath() const { return m_Path; }
+    // The file was renamed or moved on disk (the pixels are already loaded).
+    void SetPath(std::filesystem::path path) { m_Path = std::move(path); }
 
     // Only changes how shaders interpret the pixels, so it can be switched
     // at any time without reloading.

@@ -42,14 +42,33 @@ public:
     // Imports every image in `folder` that isn't loaded yet.
     void ImportFolder(const std::filesystem::path& folder);
 
+    // True for the image formats ImportTexture can load (by extension).
+    static bool IsImageFile(const std::filesystem::path& path);
+
+    // The texture loaded from `path`, or nullptr if that file isn't loaded.
+    Texture* FindTexture(const std::filesystem::path& path) const;
+
+    // Keeping textures in step with their files, for the Content Browser.
+    // `path` may be a file or a folder (then every texture loaded from a
+    // file inside it counts).
+    // - a file or folder was renamed or moved: textures follow it
+    void OnPathMoved(const std::filesystem::path& from, const std::filesystem::path& to);
+    // - how many textures were loaded from files at or under `path`
+    int CountTexturesUnder(const std::filesystem::path& path) const;
+    // - it was deleted: remove those textures (clearing material slots)
+    void RemoveTexturesUnder(const std::filesystem::path& path);
+
     // Imports can be requested from any thread (the OS file dialog answers
     // on its own thread), but textures must be created on the GL thread:
     // QueueImport stores the path, ProcessQueuedImports (called once per
-    // frame on the main thread) loads them.
+    // frame on the main thread, before the UI is built) loads them. It also
+    // frees textures removed during the previous frame.
     void QueueImport(std::filesystem::path path);
     void ProcessQueuedImports();
 
     // Removes the texture and clears it from every material slot using it.
+    // The GL texture itself lives on until the next ProcessQueuedImports:
+    // the UI may already have queued a thumbnail of it for this frame.
     void RemoveTexture(const Texture* texture);
 
     // A new material with default settings, named uniquely from `name`
@@ -78,6 +97,7 @@ public:
 private:
     std::vector<NamedMesh> m_Meshes;
     std::vector<NamedTexture> m_Textures;
+    std::vector<std::unique_ptr<Texture>> m_RemovedTextures; // freed next frame (see RemoveTexture)
     std::vector<std::unique_ptr<Material>> m_Materials;
 
     std::mutex m_QueueMutex;
