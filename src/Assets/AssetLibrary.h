@@ -61,14 +61,13 @@ public:
     // Imports can be requested from any thread (the OS file dialog answers
     // on its own thread), but textures must be created on the GL thread:
     // QueueImport stores the path, ProcessQueuedImports (called once per
-    // frame on the main thread, before the UI is built) loads them. It also
-    // frees textures removed during the previous frame.
+    // frame on the main thread) loads them.
     void QueueImport(std::filesystem::path path);
     void ProcessQueuedImports();
 
     // Removes the texture and clears it from every material slot using it.
-    // The GL texture itself lives on until the next ProcessQueuedImports:
-    // the UI may already have queued a thumbnail of it for this frame.
+    // The Texture itself is kept, not freed: undo can bring it back, and the
+    // UI may already have queued a thumbnail of it for this frame.
     void RemoveTexture(const Texture* texture);
 
     // A new material with default settings, named uniquely from `name`
@@ -76,7 +75,38 @@ public:
     Material* CreateMaterial(const std::string& name = "Material");
     Material* DuplicateMaterial(const Material& source);
     // Entities still pointing at it must be cleared first (Scene::ClearMaterial).
+    // Kept, not freed, so undo can bring it back.
     void RemoveMaterial(const Material* material);
+
+    // --- Undo support ---
+    // The texture and material lists and everything editable about them.
+    // Removed textures and materials are kept alive, so restoring an older
+    // state brings back the very same objects and every pointer to them
+    // (material slots, entities) stays valid.
+    struct TextureState
+    {
+        Texture* texture = nullptr;
+        std::string name;
+        int colorSpace = 0; // Texture::ColorSpace
+
+        bool operator==(const TextureState&) const = default;
+    };
+    struct MaterialState
+    {
+        Material* material = nullptr;
+        Material value;
+
+        bool operator==(const MaterialState&) const = default;
+    };
+    struct State
+    {
+        std::vector<TextureState> textures;
+        std::vector<MaterialState> materials;
+
+        bool operator==(const State&) const = default;
+    };
+    State CaptureState() const;
+    void RestoreState(const State& state);
 
     const std::vector<NamedMesh>& GetMeshes() const { return m_Meshes; }
     const std::vector<NamedTexture>& GetTextures() const { return m_Textures; }
@@ -97,8 +127,10 @@ public:
 private:
     std::vector<NamedMesh> m_Meshes;
     std::vector<NamedTexture> m_Textures;
-    std::vector<std::unique_ptr<Texture>> m_RemovedTextures; // freed next frame (see RemoveTexture)
     std::vector<std::unique_ptr<Material>> m_Materials;
+    // Removed, but kept for undo (see RemoveTexture / RemoveMaterial).
+    std::vector<NamedTexture> m_RemovedTextures;
+    std::vector<std::unique_ptr<Material>> m_RemovedMaterials;
 
     std::mutex m_QueueMutex;
     std::vector<std::filesystem::path> m_ImportQueue;

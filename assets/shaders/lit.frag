@@ -44,6 +44,20 @@ uniform vec3 uLightDir;
 uniform vec3 uLightColor;
 uniform vec3 uAmbientColor;
 
+// Point lights (like bare bulbs): light spreading out from a position,
+// dimming with the square of the distance and fading to nothing at its
+// range. No shadows in this view. `radiance` is linear color * intensity:
+// how bright a white surface facing the light looks from 1 unit away.
+struct PointLight
+{
+    vec3 position;
+    vec3 radiance;
+    float range;
+};
+const int MAX_POINT_LIGHTS = 16;
+uniform PointLight uPointLights[MAX_POINT_LIGHTS];
+uniform int uPointLightCount;
+
 // Camera position in world space, for the view direction.
 uniform vec3 uViewPos;
 
@@ -99,6 +113,27 @@ mat3 CotangentFrame(vec3 N, vec3 p, vec2 uv)
     // Scale-invariant: normalize by the larger of the two lengths.
     float invMax = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-20));
     return mat3(T * invMax, B * invMax, N);
+}
+
+// Light arriving from direction L (surface -> light), reflected towards V,
+// per unit of light: diffuse plus a Blinn-Phong highlight, times the cosine
+// of the angle the light comes in at. The (n + 8) / 8 factor keeps the total
+// reflected light about the same as the highlight spreads out.
+vec3 BlinnPhong(vec3 N, vec3 V, vec3 L, vec3 diffuseColor, vec3 specularColor, float shininess)
+{
+    float NdotL = max(dot(N, L), 0.0);
+    vec3 H = normalize(L + V); // halfway vector
+    float spec = pow(max(dot(N, H), 0.0), shininess) * (shininess + 8.0) / 8.0;
+    return (diffuseColor + specularColor * spec) * NdotL;
+}
+
+// 1 at a point light, falling smoothly to 0 at its range, so light doesn't
+// stop at a visible edge (as in Unreal: (1 - (d / range)^4)^2).
+float RangeFade(float lightDistance, float range)
+{
+    float x = lightDistance / range;
+    float fade = clamp(1.0 - x * x * x * x, 0.0, 1.0);
+    return fade * fade;
 }
 
 // 1.0 = fully lit, 0.0 = fully in shadow.
@@ -166,7 +201,6 @@ void main()
 
     vec3 L = normalize(-uLightDir);             // surface -> light
     vec3 V = normalize(uViewPos - vWorldPos);   // surface -> camera
-    vec3 H = normalize(L + V);                  // halfway vector (Blinn)
     float NdotL = max(dot(N, L), 0.0);
 
     // --- Shading (Blinn-Phong driven by the PBR inputs, until PBR lands) ---
@@ -175,13 +209,27 @@ void main()
     vec3 diffuseColor = baseColor * (1.0 - metallic);
     vec3 specularColor = mix(vec3(0.04), baseColor, metallic);
 
-    // Rougher = wider, dimmer highlight. The (n + 8) / 8 factor keeps the
-    // total reflected light about the same as the highlight spreads out.
+    // Rougher = wider, dimmer highlight.
     float alpha = max(roughness * roughness, 0.002);
     float shininess = min(2.0 / (alpha * alpha) - 2.0, 4096.0);
-    float spec = pow(max(dot(N, H), 0.0), shininess) * (shininess + 8.0) / 8.0;
 
-    vec3 direct = (diffuseColor + specularColor * spec) * uLightColor * NdotL;
+    vec3 direct = BlinnPhong(N, V, L, diffuseColor, specularColor, shininess) * uLightColor;
+
+    // Point lights: the same shading, with light that weakens with distance.
+    vec3 pointDirect = vec3(0.0);
+    for (int i = 0; i < min(uPointLightCount, MAX_POINT_LIGHTS); ++i)
+    {
+        vec3 toLight = uPointLights[i].position - vWorldPos;
+        float distanceSquared = dot(toLight, toLight);
+        float range = uPointLights[i].range;
+        if (distanceSquared >= range * range)
+            continue;
+        float lightDistance = sqrt(distanceSquared);
+        // Kept a little away from 0 so a surface touching the light isn't
+        // infinitely bright.
+        vec3 irradiance = uPointLights[i].radiance * RangeFade(lightDistance, range) / max(distanceSquared, 0.01);
+        pointDirect += BlinnPhong(N, V, toLight / lightDistance, diffuseColor, specularColor, shininess) * irradiance;
+    }
 
     // Shadow blocks the direct light only; ambient still fills it in. The
     // shadow lookup uses the real surface, not the normal-mapped one.
@@ -191,7 +239,7 @@ void main()
     // darkened in crevices by the AO map.
     vec3 ambient = uAmbientColor * (diffuseColor + specularColor) * ao;
 
-    vec3 color = ambient + shadow * direct + emission;
+    vec3 color = ambient + shadow * direct + pointDirect + emission;
 
     // Lighting is computed in linear light; the screen expects sRGB.
     FragColor = vec4(LinearToSrgb(max(color, 0.0)), 1.0);

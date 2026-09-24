@@ -56,6 +56,17 @@ add_library(imgui STATIC
 target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
 target_link_libraries(imgui PUBLIC SDL3::SDL3 OpenGL::GL)
 
+# ImGuizmo: move/rotate/scale handles drawn over the 3D view with ImGui.
+# Pinned to a commit: the tagged releases predate the ImGui version above.
+FetchContent_Declare(
+    imguizmo
+    GIT_REPOSITORY https://github.com/CedricGuillemet/ImGuizmo.git
+    GIT_TAG        18cef5e031d8c6973d80284c67f60549fafd78c1
+)
+FetchContent_MakeAvailable(imguizmo)
+# Its CMake file makes the `imguizmo` target; it needs our ImGui.
+target_link_libraries(imguizmo PUBLIC imgui)
+
 # glad: loads modern OpenGL functions at runtime. Generated for GL 4.6 core
 # (glad2: glad --api gl:core=4.6 --extensions "" --out-path external/glad c)
 add_library(glad STATIC external/glad/src/gl.c)
@@ -89,6 +100,7 @@ target_link_libraries(optix INTERFACE CUDA::cudart_static)
 add_executable(MyEngine
     src/main.cpp
     src/Assets/AssetLibrary.cpp
+    src/Editor/UndoHistory.cpp
     src/Platform/FileSystem.cpp
     src/RayTracing/CudaBuffer.cpp
     src/RayTracing/Denoiser.cpp
@@ -97,6 +109,7 @@ add_executable(MyEngine
     src/RayTracing/OptixContext.cpp
     src/RayTracing/RayTracer.cpp
     src/RayTracing/SceneAccel.cpp
+    src/RayTracing/TextureCache.cpp
     src/Renderer/Camera.cpp
     src/Renderer/Mesh.cpp
     src/Renderer/ObjectPicker.cpp
@@ -111,6 +124,7 @@ add_executable(MyEngine
     src/UI/ImGuiLayer.cpp
     src/UI/SceneHierarchyPanel.cpp
     src/UI/SideDrawer.cpp
+    src/UI/TransformGizmo.cpp
 )
 
 target_include_directories(MyEngine PRIVATE src)
@@ -124,7 +138,7 @@ target_compile_definitions(MyEngine PRIVATE MYENGINE_SOURCE_ASSETS_DIR="${CMAKE_
 if(WIN32)
     target_link_libraries(MyEngine PRIVATE shell32)
 endif()
-target_link_libraries(MyEngine PRIVATE SDL3::SDL3 OpenGL::GL glad glm::glm stb_image imgui optix)
+target_link_libraries(MyEngine PRIVATE SDL3::SDL3 OpenGL::GL glad glm::glm stb_image imgui imguizmo optix)
 
 if(MSVC)
     target_compile_options(MyEngine PRIVATE /W4 /permissive-)

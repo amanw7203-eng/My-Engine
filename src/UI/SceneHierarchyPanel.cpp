@@ -150,6 +150,9 @@ void SceneHierarchyPanel::DrawCreateMenuItems(Scene& scene, const AssetLibrary& 
         if (ImGui::MenuItem(entry.name.c_str()))
             QueueCreate(scene, entry.name.c_str(), entry.mesh.get(), parent);
     }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Point Light"))
+        QueueCreate(scene, "Point Light", nullptr, parent, /*isLight*/ true);
 }
 
 void SceneHierarchyPanel::DrawInspector(const Scene& scene, AssetLibrary& assets)
@@ -188,9 +191,40 @@ void SceneHierarchyPanel::DrawInspector(const Scene& scene, AssetLibrary& assets
         ImGui::EndCombo();
     }
 
-    DrawMaterialSection(scene, assets, entity);
+    DrawLightSection(entity);
+    // A light on its own has no surface for a material to apply to.
+    if (entity.mesh || !entity.light)
+        DrawMaterialSection(scene, assets, entity);
 
     ImGui::End();
+}
+
+void SceneHierarchyPanel::DrawLightSection(Entity& entity)
+{
+    ImGui::SeparatorText("Light");
+    ImGui::PushID("light");
+    if (!entity.light)
+    {
+        if (ImGui::Button("Add Point Light"))
+            entity.light.emplace();
+        ImGui::SetItemTooltip("Make this object give off light, like a lamp");
+        ImGui::PopID();
+        return;
+    }
+
+    PointLight& light = *entity.light;
+    ImGui::ColorEdit3("Color", &light.color.x);
+    ImGui::DragFloat("Intensity", &light.intensity, 0.05f, 0.0f, 10000.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("How bright a white surface facing the light looks from 1 unit away.\n"
+                          "It gets dimmer with the square of the distance, like real light.");
+    ImGui::DragFloat("Range", &light.range, 0.05f, 0.1f, 1000.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("Beyond this distance the light has no effect (it fades out before\n"
+                          "it). Smaller is faster, as fewer surfaces need to consider it.");
+    ImGui::Checkbox("Cast Shadows", &light.castShadows);
+    ImGui::SetItemTooltip("In the ray traced view. The raster view has shadows for the sun only.");
+    if (ImGui::SmallButton("Remove Light"))
+        entity.light.reset();
+    ImGui::PopID();
 }
 
 void SceneHierarchyPanel::DrawMaterialSection(const Scene& scene, AssetLibrary& assets, Entity& entity)
@@ -247,11 +281,18 @@ void SceneHierarchyPanel::DrawMaterialSection(const Scene& scene, AssetLibrary& 
     DrawMaterialEditor(*entity.material, assets);
 }
 
-void SceneHierarchyPanel::QueueCreate(Scene& scene, const char* name, const Mesh* mesh, Entity* parent)
+void SceneHierarchyPanel::QueueCreate(Scene& scene, const char* name, const Mesh* mesh, Entity* parent, bool isLight)
 {
-    m_Deferred.push_back([this, &scene, name = std::string(name), mesh, parent] {
+    m_Deferred.push_back([this, &scene, name = std::string(name), mesh, parent, isLight] {
         Entity& created = scene.CreateEntity(name, parent);
         created.mesh = mesh;
+        if (isLight)
+        {
+            created.light.emplace();
+            // Off the floor, where it lights things rather than sitting in them.
+            if (!parent)
+                created.transform.position = glm::vec3(0.0f, 1.5f, 0.0f);
+        }
         m_Selected = &created;
     });
 }

@@ -1,4 +1,5 @@
 #include "Assets/AssetLibrary.h"
+#include "Editor/UndoHistory.h"
 #include "Renderer/Camera.h"
 #include "Renderer/Mesh.h"
 #include "Renderer/ObjectPicker.h"
@@ -11,11 +12,13 @@
 #include "RayTracing/OptixContext.h"
 #include "RayTracing/RayTracer.h"
 #include "RayTracing/SceneAccel.h"
+#include "RayTracing/TextureCache.h"
 #include "UI/AssetsPanel.h"
 #include "UI/ContentBrowserPanel.h"
 #include "UI/ImGuiLayer.h"
 #include "UI/SceneHierarchyPanel.h"
 #include "UI/SideDrawer.h"
+#include "UI/TransformGizmo.h"
 
 #include <glad/gl.h>
 #include <SDL3/SDL.h>
@@ -24,11 +27,24 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <imgui.h>
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <iostream>
 #include <optional>
+#include <string>
 #include <vector>
+
+// Where to draw a point light's marker in the 3D view: a small diamond (a
+// cube stood on a corner) at the light, the same size whatever the scale of
+// the entity it belongs to.
+static glm::mat4 LightMarkerMatrix(const glm::mat4& world)
+{
+    glm::mat4 marker = glm::translate(glm::mat4(1.0f), glm::vec3(world[3]));
+    marker = glm::rotate(marker, glm::radians(45.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    marker = glm::rotate(marker, glm::radians(35.26f), glm::vec3(1.0f, 0.0f, 0.0f));
+    return glm::scale(marker, glm::vec3(0.15f));
+}
 
 int main(int /*argc*/, char* /*argv*/[])
 {
@@ -163,6 +179,10 @@ int main(int /*argc*/, char* /*argv*/[])
         // 2 units), stretching into the distance to show off mipmapping.
         const Mesh* floorMesh = assets.AddMesh("Floor 50x50", Mesh::CreatePlane(50.0f, 25.0f));
 
+        // Ray tracing copies of the textures materials use, made when they
+        // are first needed.
+        TextureCache rayTracingTextures;
+
         // Ray tracing copies of the meshes. Built up front so the first
         // ray traced frame doesn't stall building them.
         MeshAccelCache meshAccels(optix);
@@ -240,6 +260,12 @@ int main(int /*argc*/, char* /*argv*/[])
         moonEntity.transform.position = glm::vec3(1.2f, 0.6f, 0.0f);
         moonEntity.transform.scale = glm::vec3(0.35f);
 
+        // A warm lamp between the quad and the cube. More point lights can
+        // be added from the Hierarchy's create menu.
+        Entity& lampEntity = scene.CreateEntity("Point Light");
+        lampEntity.light = PointLight{ glm::vec3(1.0f, 0.6f, 0.3f), 1.5f, 6.0f, true };
+        lampEntity.transform.position = glm::vec3(1.0f, 0.0f, 0.9f);
+
         // Ray tracing: the scene as the ray tracer sees it (rebuilt each
         // frame while in use) and the renderer. The programs are compiled
         // by the build into raytracing/ next to the exe.
@@ -247,8 +273,10 @@ int main(int /*argc*/, char* /*argv*/[])
         RayTracer rayTracer(optix, std::filesystem::path(basePath ? basePath : "") / "raytracing/programs.optixir");
 
         SceneHierarchyPanel hierarchyPanel;
+        TransformGizmo transformGizmo; // move/rotate/scale handles on the selection
         AssetsPanel assetsPanel(window, textureFolder);
         ContentBrowserPanel contentBrowser(window, contentRoot);
+        UndoHistory undoHistory(scene, assets); // Ctrl+Z / Ctrl+Y
 
         // Back and a little to the right so the whole scene is in view.
         Camera camera(glm::vec3(1.0f, 0.5f, 6.0f));
@@ -265,6 +293,7 @@ int main(int /*argc*/, char* /*argv*/[])
         int rayTracingSamples = 1;
         bool rayTracingDenoise = true;
         bool rayTracingDenoiseHalf = true;
+        bool rayTracingReflections = true;
         int rayTracingMovingHistory = 16;
 
         // A single directional "sun" light. Its direction is given as two
@@ -334,14 +363,16 @@ int main(int /*argc*/, char* /*argv*/[])
                 ImGui::EndDisabled();
                 ImGui::SetItemTooltip(rayTracer.IsValid()
                     ? "Render with hardware ray tracing (OptiX): PBR shading, exact\n"
-                      "shadows and ambient light bouncing between surfaces.\n"
-                      "Material textures are not supported yet."
+                      "shadows and ambient light bouncing between surfaces."
                     : "Unavailable: needs an NVIDIA RTX GPU (see the console for why it failed)");
                 if (rayTracingEnabled && rayTracer.IsValid())
                 {
+                    ImGui::Checkbox("Reflections", &rayTracingReflections);
+                    ImGui::SetItemTooltip("Trace reflections, sharp to blurry by each material's roughness\n"
+                                          "(and tinted by metals). Off: surfaces reflect a plain sky.");
                     ImGui::SliderInt("Bounces", &rayTracingBounces, 0, 8);
-                    ImGui::SetItemTooltip("How many times ambient light bounces between surfaces.\n"
-                                          "0 = flat ambient, like the raster view.");
+                    ImGui::SetItemTooltip("How many times light bounces between surfaces (diffusely or\n"
+                                          "as reflections). 0 = flat ambient, like the raster view.");
                     ImGui::SliderInt("Samples / frame", &rayTracingSamples, 1, 16);
                     ImGui::SetItemTooltip("Light paths per pixel each frame: less noise while\n"
                                           "moving, at the cost of speed.");
@@ -371,6 +402,8 @@ int main(int /*argc*/, char* /*argv*/[])
             { "Help", [&] {
                 ImGui::TextDisabled("WASD move, Q/E down/up, Shift sprint");
                 ImGui::TextDisabled("Hold right mouse or Left Alt to look");
+                ImGui::TextDisabled("Ctrl+Z undo, Ctrl+Y (or Ctrl+Shift+Z) redo");
+                ImGui::TextDisabled("G / R / T: move / rotate / scale, Ctrl snaps");
                 ImGui::TextDisabled("Esc quit");
                 ImGui::Checkbox("Show ImGui demo", &showImGuiDemo);
             } },
@@ -429,7 +462,8 @@ int main(int /*argc*/, char* /*argv*/[])
                 // Left-clicking the 3D view (not a panel, not while looking
                 // around) selects the object under the cursor.
                 else if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button == SDL_BUTTON_LEFT
-                         && !ui.WantsMouse() && !SDL_GetWindowRelativeMouseMode(window))
+                         && !ui.WantsMouse() && !transformGizmo.WantsMouse()
+                         && !SDL_GetWindowRelativeMouseMode(window))
                     pendingPick = glm::vec2(event.button.x, event.button.y);
                 else if (event.type == SDL_EVENT_MOUSE_MOTION && SDL_GetWindowRelativeMouseMode(window))
                     camera.Rotate(event.motion.xrel, event.motion.yrel);
@@ -448,6 +482,11 @@ int main(int /*argc*/, char* /*argv*/[])
 
             // --- UI ---
             ui.BeginFrame();
+
+            // Undo/redo first, so every panel draws the restored state. The
+            // selection goes if the undo took the selected entity away.
+            if (undoHistory.HandleShortcuts() && !scene.Contains(hierarchyPanel.GetSelected()))
+                hierarchyPanel.SetSelected(nullptr);
 
             // Load images picked in the file dialog or dropped on the window.
             assets.ProcessQueuedImports();
@@ -483,6 +522,13 @@ int main(int /*argc*/, char* /*argv*/[])
             // Recomputed each frame so the image never stretches on resize.
             // (height is 0 while the window is minimised.)
             const float aspect = height > 0 ? static_cast<float>(width) / height : 1.0f;
+            const glm::mat4 view = camera.GetViewMatrix();
+            const glm::mat4 projection = camera.GetProjectionMatrix(aspect);
+
+            // Handles on the selected object. Dragging them changes its
+            // transform, so this comes before anything is drawn with it.
+            transformGizmo.Draw(hierarchyPanel.GetSelected(), view, projection, ui.GetViewportMin(),
+                                ui.GetViewportMax());
 
             // Ray traced frames replace the shadow map and the lit pass; the
             // pick and selection outline passes still rasterize.
@@ -522,9 +568,6 @@ int main(int /*argc*/, char* /*argv*/[])
                 shadowMap.EndRender();
             }
 
-            const glm::mat4 view = camera.GetViewMatrix();
-            const glm::mat4 projection = camera.GetProjectionMatrix(aspect);
-
             // Click to select: draw just the clicked pixel with each entity
             // writing its ID, and select whichever one ends up there (or
             // nothing, which deselects).
@@ -543,11 +586,26 @@ int main(int /*argc*/, char* /*argv*/[])
                 pickShader.SetMat4("uView", view);
                 pickShader.SetMat4("uProjection", ObjectPicker::GetPickMatrix(pixel, viewSize) * projection);
                 scene.Draw(pickShader, defaultMaterial, whiteTexture, &drawnEntities);
+                // Light markers are clickable too, and win over what's behind
+                // them since they are drawn on top.
+                glDisable(GL_DEPTH_TEST);
+                scene.ForEachVisible([&](Entity& entity, const glm::mat4& world) {
+                    if (!entity.light)
+                        return;
+                    drawnEntities.push_back(&entity);
+                    pickShader.SetUInt("uEntityId", static_cast<unsigned int>(drawnEntities.size()));
+                    pickShader.SetMat4("uModel", LightMarkerMatrix(world));
+                    cubeMesh->Draw();
+                });
+                glEnable(GL_DEPTH_TEST);
                 const std::uint32_t id = picker.EndRender();
 
                 hierarchyPanel.SetSelected(id > 0 && id <= drawnEntities.size() ? drawnEntities[id - 1] : nullptr);
                 pendingPick.reset();
             }
+
+            // Every visible point light, for whichever renderer draws the scene.
+            const std::vector<ScenePointLight> pointLights = scene.GatherPointLights();
 
             // Pass 2: the lit scene, as seen by the camera.
             glViewport(0, 0, width, height);
@@ -556,7 +614,7 @@ int main(int /*argc*/, char* /*argv*/[])
 
             if (rayTraced)
             {
-                sceneAccel.Build(scene, meshAccels, defaultMaterial);
+                sceneAccel.Build(scene, meshAccels, rayTracingTextures, defaultMaterial);
 
                 RayTracer::FrameSettings settings{};
                 settings.view = view;
@@ -567,12 +625,14 @@ int main(int /*argc*/, char* /*argv*/[])
                 settings.ambientColor = SrgbToLinear(ambientColor);
                 settings.background = SrgbToLinear(clearColor);
                 settings.shadowsEnabled = shadowsEnabled;
+                settings.reflections = rayTracingReflections;
                 settings.cullBackFaces = backfaceCulling;
                 settings.maxBounces = rayTracingBounces;
                 settings.samplesPerPixel = rayTracingSamples;
                 settings.denoise = rayTracingDenoise;
                 settings.denoiseHalfResolution = rayTracingDenoiseHalf;
                 settings.movingHistoryFrames = rayTracingMovingHistory;
+                settings.pointLights = pointLights;
                 rayTracer.Render(sceneAccel, settings, width, height);
             }
             else
@@ -585,6 +645,28 @@ int main(int /*argc*/, char* /*argv*/[])
                 // The pickers show sRGB; the shader lights in linear space.
                 shader.SetVec3("uLightColor", SrgbToLinear(lightColor));
                 shader.SetVec3("uAmbientColor", SrgbToLinear(ambientColor));
+
+                // The shader takes a fixed number of point lights: if there
+                // are more, the ones nearest the camera.
+                std::vector<ScenePointLight> nearest = pointLights;
+                constexpr size_t kMaxRasterPointLights = 16; // MAX_POINT_LIGHTS in lit.frag
+                if (nearest.size() > kMaxRasterPointLights)
+                {
+                    const glm::vec3 eye = camera.GetPosition();
+                    std::partial_sort(nearest.begin(), nearest.begin() + kMaxRasterPointLights, nearest.end(),
+                                      [&](const ScenePointLight& a, const ScenePointLight& b) {
+                                          return glm::distance(a.position, eye) < glm::distance(b.position, eye);
+                                      });
+                    nearest.resize(kMaxRasterPointLights);
+                }
+                shader.SetInt("uPointLightCount", static_cast<int>(nearest.size()));
+                for (size_t i = 0; i < nearest.size(); ++i)
+                {
+                    const std::string prefix = "uPointLights[" + std::to_string(i) + "].";
+                    shader.SetVec3((prefix + "position").c_str(), nearest[i].position);
+                    shader.SetVec3((prefix + "radiance").c_str(), nearest[i].radiance);
+                    shader.SetFloat((prefix + "range").c_str(), nearest[i].range);
+                }
 
                 shader.SetInt("uShadowsEnabled", shadowsEnabled);
                 shader.SetMat4("uLightSpace", lightSpace);
@@ -601,9 +683,25 @@ int main(int /*argc*/, char* /*argv*/[])
                 scene.Draw(shader, defaultMaterial, whiteTexture);
             }
 
+            // Light markers: a small diamond in the light's color at each
+            // point light (orange when selected), on top of everything so a
+            // light is easy to find and click.
+            const Entity* selected = hierarchyPanel.GetSelected();
+            flatShader.Bind();
+            flatShader.SetMat4("uView", view);
+            flatShader.SetMat4("uProjection", projection);
+            glDisable(GL_DEPTH_TEST);
+            scene.ForEachVisible([&](Entity& entity, const glm::mat4& world) {
+                if (!entity.light)
+                    return;
+                flatShader.SetMat4("uModel", LightMarkerMatrix(world));
+                flatShader.SetVec3("uColor", &entity == selected ? glm::vec3(1.0f, 0.55f, 0.1f) : entity.light->color);
+                cubeMesh->Draw();
+            });
+            glEnable(GL_DEPTH_TEST);
+
             // Selection outline: an orange border around the selected
             // object's silhouette, visible even through things in front.
-            const Entity* selected = hierarchyPanel.GetSelected();
             if (selected && selected->mesh && selected->IsVisibleInHierarchy())
             {
                 flatShader.Bind();
@@ -640,6 +738,10 @@ int main(int /*argc*/, char* /*argv*/[])
                 if (backfaceCulling)
                     glEnable(GL_CULL_FACE);
             }
+
+            // Record an undo step if this frame's edits changed anything
+            // (waits while a gizmo handle is still being dragged).
+            undoHistory.Update(transformGizmo.IsDragging());
 
             // UI last, so it draws on top of the scene.
             ui.EndFrame();

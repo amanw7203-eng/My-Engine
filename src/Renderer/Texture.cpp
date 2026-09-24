@@ -2,6 +2,7 @@
 
 #include <stb_image.h>
 
+#include <atomic>
 #include <iostream>
 #include <utility>
 
@@ -44,6 +45,10 @@ Texture::Texture(const unsigned char* rgbaPixels, int width, int height)
 
 void Texture::Upload(const unsigned char* pixels, int width, int height)
 {
+    // Every upload is a new image.
+    static std::atomic<std::uint64_t> nextSerial{ 1 };
+    m_Serial = nextSerial++;
+
     m_Width = width;
     m_Height = height;
 
@@ -84,6 +89,7 @@ Texture::Texture(Texture&& other) noexcept
     , m_Width(std::exchange(other.m_Width, 0))
     , m_Height(std::exchange(other.m_Height, 0))
     , m_Loaded(std::exchange(other.m_Loaded, false))
+    , m_Serial(std::exchange(other.m_Serial, 0))
 {
 }
 
@@ -98,6 +104,7 @@ Texture& Texture::operator=(Texture&& other) noexcept
         m_Width = std::exchange(other.m_Width, 0);
         m_Height = std::exchange(other.m_Height, 0);
         m_Loaded = std::exchange(other.m_Loaded, false);
+        m_Serial = std::exchange(other.m_Serial, 0);
     }
     return *this;
 }

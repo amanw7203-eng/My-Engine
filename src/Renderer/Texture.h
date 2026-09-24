@@ -2,6 +2,7 @@
 
 #include <glad/gl.h>
 
+#include <cstdint>
 #include <filesystem>
 
 // Owns an OpenGL 2D texture loaded from an image file, with a full mipmap
@@ -47,6 +48,11 @@ public:
     int GetHeight() const { return m_Height; }
     GLuint GetId() const { return m_Texture; } // e.g. for ImGui::Image previews
 
+    // Different for every image ever loaded (never reused, unlike the
+    // Texture's address or GL name), so caches of it can't mix images up.
+    // Moving a Texture keeps it.
+    std::uint64_t GetSerial() const { return m_Serial; }
+
     // The file it was loaded from; empty for textures made from raw pixels.
     const std::filesystem::path& GetPath() const { return m_Path; }
     // The file was renamed or moved on disk (the pixels are already loaded).
@@ -64,4 +70,5 @@ private:
     int m_Width = 0;
     int m_Height = 0;
     bool m_Loaded = false;
+    std::uint64_t m_Serial = 0;
 };

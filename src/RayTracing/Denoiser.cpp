@@ -107,14 +107,23 @@ bool Denoiser::Run(const Images& images)
         Image(m_InternalGuide[currentGuide].Get(), m_Width, m_Height, m_InternalGuidePixelSize,
               OPTIX_PIXEL_FORMAT_INTERNAL_GUIDE_LAYER);
 
-    OptixDenoiserLayer layer{};
-    layer.input = Rgb(images.input, m_Width, m_Height);
-    layer.output = Rgb(images.output, m_Width, m_Height);
-    // Last frame's result, which the output buffer still holds (reading it
-    // before overwriting is allowed). At the start of a sequence there is
-    // none: the noisy input stands in, as the OptiX docs suggest.
-    layer.previousOutput = m_HasPrevious ? layer.output : layer.input;
-    layer.type = OPTIX_DENOISER_AOV_TYPE_BEAUTY;
+    // The main image, and optionally a second one (an AOV, in OptiX's
+    // terms) denoised with it.
+    OptixDenoiserLayer layers[2] = {};
+    unsigned int layerCount = 0;
+    auto addLayer = [&](CUdeviceptr input, CUdeviceptr output, OptixDenoiserAOVType type) {
+        OptixDenoiserLayer& layer = layers[layerCount++];
+        layer.input = Rgb(input, m_Width, m_Height);
+        layer.output = Rgb(output, m_Width, m_Height);
+        // Last frame's result, which the output buffer still holds (reading
+        // it before overwriting is allowed). At the start of a sequence
+        // there is none: the noisy input stands in, as the OptiX docs say.
+        layer.previousOutput = m_HasPrevious ? layer.output : layer.input;
+        layer.type = type;
+    };
+    addLayer(images.input, images.output, OPTIX_DENOISER_AOV_TYPE_BEAUTY);
+    if (images.secondInput && images.secondOutput)
+        addLayer(images.secondInput, images.secondOutput, OPTIX_DENOISER_AOV_TYPE_SPECULAR);
 
     // Exposure and average color left null: the denoiser measures them
     // from the input each frame.
@@ -123,7 +132,7 @@ bool Denoiser::Run(const Images& images)
     params.temporalModeUsePreviousLayers = m_HasPrevious ? 1u : 0u;
 
     if (!OPTIX_CHECK(optixDenoiserInvoke(m_Denoiser, m_Context.GetStream(), &params,
-                                         m_State.Get(), m_State.GetSize(), &guides, &layer, 1, 0, 0,
+                                         m_State.Get(), m_State.GetSize(), &guides, layers, layerCount, 0, 0,
                                          m_Scratch.Get(), m_Scratch.GetSize())))
     {
         m_HasPrevious = false;

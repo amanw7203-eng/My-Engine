@@ -10,7 +10,7 @@ class Scene;
 
 // Two editor panels sharing one selection:
 //   Hierarchy - the entity tree: select, create, delete, drag to re-parent
-//   Inspector - edit the selected entity's name, transform, mesh, material...
+//   Inspector - edit the selected entity's name, transform, mesh, light, material...
 class SceneHierarchyPanel
 {
 public:
@@ -28,8 +28,10 @@ private:
     void DrawCreateMenuItems(Scene& scene, const AssetLibrary& assets, Entity* parent);
     void DrawInspector(const Scene& scene, AssetLibrary& assets);
     void DrawMaterialSection(const Scene& scene, AssetLibrary& assets, Entity& entity);
+    void DrawLightSection(Entity& entity);
 
-    void QueueCreate(Scene& scene, const char* name, const Mesh* mesh, Entity* parent);
+    // isLight: the new entity is a point light.
+    void QueueCreate(Scene& scene, const char* name, const Mesh* mesh, Entity* parent, bool isLight = false);
     void QueueDelete(Scene& scene, Entity& entity);
 
     Entity* m_Selected = nullptr;

@@ -4,8 +4,10 @@
 #include "RayTracing/CudaCheck.h"
 #include "RayTracing/MeshAccel.h"
 #include "RayTracing/OptixContext.h"
+#include "RayTracing/TextureCache.h"
 #include "Renderer/ColorSpace.h"
 #include "Renderer/Mesh.h"
+#include "Renderer/Texture.h"
 #include "Scene/Scene.h"
 
 #include <algorithm>
@@ -18,6 +20,11 @@ static_assert(offsetof(DeviceVertex, position) == offsetof(Vertex, position));
 static_assert(offsetof(DeviceVertex, color) == offsetof(Vertex, color));
 static_assert(offsetof(DeviceVertex, u) == offsetof(Vertex, uv));
 static_assert(offsetof(DeviceVertex, normal) == offsetof(Vertex, normal));
+
+// The content hash reads InstanceData as raw bytes, so it must have no
+// padding (whose bytes are undefined): 16 pointer bytes, 8 material
+// floats, 12 transform floats, 6 texture handles, 12 map/UV floats.
+static_assert(sizeof(InstanceData) == 16 + 8 * 4 + 12 * 4 + 6 * 8 + 12 * 4);
 
 namespace
 {
@@ -44,7 +51,8 @@ namespace
     }
 }
 
-void SceneAccel::Build(const Scene& scene, MeshAccelCache& meshAccels, const Material& defaultMaterial)
+void SceneAccel::Build(const Scene& scene, MeshAccelCache& meshAccels, TextureCache& textures,
+                       const Material& defaultMaterial)
 {
     m_HostInstances.clear();
     m_HostInstanceData.clear();
@@ -93,6 +101,25 @@ void SceneAccel::Build(const Scene& scene, MeshAccelCache& meshAccels, const Mat
         data.metallic = material.metallic;
         data.roughness = material.roughness;
 
+        // Texture maps, in MaterialMap order. The color space setting picks
+        // which of the two CUDA views of the image to read through.
+        const Texture* const maps[MAP_COUNT] = { material.baseColorMap, material.metallicMap, material.roughnessMap,
+                                                 material.normalMap, material.aoMap, material.emissionMap };
+        for (unsigned int map = 0; map < MAP_COUNT; ++map)
+        {
+            if (!maps[map])
+                continue;
+            const TextureCache::Entry& texture = textures.Get(*maps[map]);
+            data.maps[map] = maps[map]->colorSpace == Texture::ColorSpace::Srgb ? texture.srgb : texture.linear;
+            data.mapLog2Size[map] = texture.log2Size;
+        }
+        data.normalStrength = material.normalStrength;
+        data.aoStrength = material.aoStrength;
+        data.uvTiling[0] = material.tiling.x;
+        data.uvTiling[1] = material.tiling.y;
+        data.uvOffset[0] = material.offset.x;
+        data.uvOffset[1] = material.offset.y;
+
         // Where the entity was last frame; one that just appeared was here.
         Transform3x4 current;
         std::copy(std::begin(instance.transform), std::end(instance.transform), current.begin());
@@ -101,6 +128,8 @@ void SceneAccel::Build(const Scene& scene, MeshAccelCache& meshAccels, const Mat
         std::copy(before.begin(), before.end(), std::begin(data.previousTransform));
         m_CurrentTransforms[&entity] = current;
     });
+    // Frees the CUDA copies of textures no material in the scene uses any more.
+    textures.EndFrame();
 
     // Instances hold the transforms and meshes, instance data the materials.
     m_ContentHash = HashBytes(m_HostInstances.data(), m_HostInstances.size() * sizeof(OptixInstance),

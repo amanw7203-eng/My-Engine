@@ -219,24 +219,30 @@ bool RayTracer::ResizeFrameBuffers(int width, int height)
         {
             m_Direct[i] = CudaBuffer(bytes);
             m_Indirect[i] = CudaBuffer(bytes);
+            m_Specular[i] = CudaBuffer(bytes);
+            m_SpecularAlbedo[i] = CudaBuffer(bytes);
             m_Albedo[i] = CudaBuffer(bytes);
             m_Normal[i] = CudaBuffer(bytes);
             m_Position[i] = CudaBuffer(bytes);
         }
         m_DenoiserInput = CudaBuffer(bytes);
+        m_SpecularDenoiserInput = CudaBuffer(bytes);
         m_GuideNormal = CudaBuffer(bytes);
         m_Flow = CudaBuffer(pixels * sizeof(float2));
         m_FlowTrust = CudaBuffer(pixels * sizeof(float));
         m_Denoised = CudaBuffer(bytes);
+        m_SpecularDenoised = CudaBuffer(bytes);
 
         // Half resolution, rounded up so an odd row or column is covered.
         const size_t halfPixels = static_cast<size_t>((width + 1) / 2) * ((height + 1) / 2);
         m_HalfInput = CudaBuffer(halfPixels * sizeof(float4));
+        m_HalfSpecularInput = CudaBuffer(halfPixels * sizeof(float4));
         m_HalfAlbedo = CudaBuffer(halfPixels * sizeof(float4));
         m_HalfNormal = CudaBuffer(halfPixels * sizeof(float4));
         m_HalfFlow = CudaBuffer(halfPixels * sizeof(float2));
         m_HalfFlowTrust = CudaBuffer(halfPixels * sizeof(float));
         m_HalfDenoised = CudaBuffer(halfPixels * sizeof(float4));
+        m_HalfSpecularDenoised = CudaBuffer(halfPixels * sizeof(float4));
 
         // Nothing from before the resize lines up with the new pixels.
         ResetHistory();
@@ -244,12 +250,14 @@ bool RayTracer::ResizeFrameBuffers(int width, int height)
     }
 
     for (int i = 0; i < 2; ++i)
-        if (!m_Direct[i].Get() || !m_Indirect[i].Get() || !m_Albedo[i].Get() || !m_Normal[i].Get() ||
+        if (!m_Direct[i].Get() || !m_Indirect[i].Get() || !m_Specular[i].Get() || !m_SpecularAlbedo[i].Get() ||
+            !m_Albedo[i].Get() || !m_Normal[i].Get() ||
             !m_Position[i].Get())
             return false;
     for (const CudaBuffer* buffer : { &m_DenoiserInput, &m_GuideNormal, &m_Flow, &m_FlowTrust, &m_Denoised,
                                       &m_HalfInput, &m_HalfAlbedo, &m_HalfNormal, &m_HalfFlow, &m_HalfFlowTrust,
-                                      &m_HalfDenoised })
+                                      &m_HalfDenoised, &m_SpecularDenoiserInput, &m_SpecularDenoised,
+                                      &m_HalfSpecularInput, &m_HalfSpecularDenoised })
         if (!buffer->Get())
             return false;
     return true;
@@ -294,10 +302,12 @@ void RayTracer::Render(const SceneAccel& scene, const FrameSettings& settings, i
     sameView.denoise = m_PreviousSettings.denoise;
     sameView.denoiseHalfResolution = m_PreviousSettings.denoiseHalfResolution;
     sameView.movingHistoryFrames = m_PreviousSettings.movingHistoryFrames;
+    sameView.pointLights = m_PreviousSettings.pointLights;
     const bool lightingChanged = !(sameView == m_PreviousSettings);
     const bool cameraMoved = settings.view != m_PreviousSettings.view ||
                              settings.projection != m_PreviousSettings.projection;
-    const bool sceneMoved = scene.GetContentHash() != m_PreviousSceneHash;
+    const bool sceneMoved = scene.GetContentHash() != m_PreviousSceneHash ||
+                            settings.pointLights != m_PreviousSettings.pointLights;
     if (lightingChanged)
         ResetHistory();
     if (!(settings == m_PreviousSettings) || sceneMoved)
@@ -351,8 +361,15 @@ void RayTracer::Render(const SceneAccel& scene, const FrameSettings& settings, i
     params.presentAlbedo = asFloat4(m_Albedo[current]);
     params.presentIndirect = asFloat4(!denoise ? m_Indirect[current] : halfResolution ? m_HalfDenoised : m_Denoised);
     params.upsampleIndirect = denoise && halfResolution;
+    params.presentSpecular = asFloat4(m_Specular[current]);
+    // Reflections only go through the denoiser when there are any.
+    params.presentSpecularDenoised = denoise && settings.reflections
+        ? asFloat4(halfResolution ? m_HalfSpecularDenoised : m_SpecularDenoised)
+        : nullptr;
+    params.presentSpecularAlbedo = asFloat4(m_SpecularAlbedo[current]);
 
     params.halfInput = asFloat4(m_HalfInput);
+    params.halfSpecularInput = asFloat4(m_HalfSpecularInput);
     params.halfAlbedo = asFloat4(m_HalfAlbedo);
     params.halfNormal = asFloat4(m_HalfNormal);
     params.halfFlow = reinterpret_cast<float2*>(m_HalfFlow.Get());
@@ -364,6 +381,10 @@ void RayTracer::Render(const SceneAccel& scene, const FrameSettings& settings, i
     params.directOut = asFloat4(m_Direct[current]);
     params.indirectIn = asFloat4(m_Indirect[previous]);
     params.indirectOut = asFloat4(m_Indirect[current]);
+    params.specularIn = asFloat4(m_Specular[previous]);
+    params.specularOut = asFloat4(m_Specular[current]);
+    params.specularAlbedoIn = asFloat4(m_SpecularAlbedo[previous]);
+    params.specularAlbedoOut = asFloat4(m_SpecularAlbedo[current]);
     params.albedoIn = asFloat4(m_Albedo[previous]);
     params.albedoOut = asFloat4(m_Albedo[current]);
     params.normalIn = asFloat4(m_Normal[previous]);
@@ -371,6 +392,7 @@ void RayTracer::Render(const SceneAccel& scene, const FrameSettings& settings, i
     params.positionIn = asFloat4(m_Position[previous]);
     params.positionOut = asFloat4(m_Position[current]);
     params.denoiserInput = asFloat4(m_DenoiserInput);
+    params.specularDenoiserInput = asFloat4(m_SpecularDenoiserInput);
     params.guideNormal = asFloat4(m_GuideNormal);
     params.flow = reinterpret_cast<float2*>(m_Flow.Get());
     params.flowTrust = reinterpret_cast<float*>(m_FlowTrust.Get());
@@ -393,12 +415,31 @@ void RayTracer::Render(const SceneAccel& scene, const FrameSettings& settings, i
         for (int column = 0; column < 3; ++column)
             params.viewRotation[row * 3 + column] = settings.view[column][row];
     params.cameraPosition = ToFloat3(glm::vec3(glm::inverse(settings.view)[3]));
+    // projection[1][1] is 1 / tan(half the vertical field of view), so the
+    // view spans 2 / projection[1][1] (in tangent units) over `height` pixels.
+    params.pixelSpreadAngle = 2.0f / (settings.projection[1][1] * static_cast<float>(height));
 
     params.lightDir = ToFloat3(settings.lightDir);
     params.lightColor = ToFloat3(settings.lightColor);
     params.ambientColor = ToFloat3(settings.ambientColor);
     params.background = ToFloat3(settings.background);
+
+    // Point lights: uploaded every frame (a handful of bytes each).
+    std::vector<DevicePointLight> pointLights;
+    pointLights.reserve(settings.pointLights.size());
+    for (const ScenePointLight& light : settings.pointLights)
+        pointLights.push_back({ ToFloat3(light.position), ToFloat3(light.radiance), light.range, light.castShadows ? 1 : 0 });
+    const size_t pointLightBytes = pointLights.size() * sizeof(DevicePointLight);
+    if (m_PointLights.GetSize() < pointLightBytes)
+        m_PointLights = CudaBuffer(pointLightBytes);
+    if (!pointLights.empty() && m_PointLights.Get())
+    {
+        m_PointLights.Upload(pointLights.data(), pointLightBytes);
+        params.pointLights = reinterpret_cast<const DevicePointLight*>(m_PointLights.Get());
+        params.pointLightCount = static_cast<unsigned int>(pointLights.size());
+    }
     params.shadowsEnabled = settings.shadowsEnabled;
+    params.reflections = settings.reflections;
     params.cullBackFaces = settings.cullBackFaces;
     params.scene = scene.GetHandle();
     params.instances = scene.GetInstanceData();
@@ -428,6 +469,11 @@ void RayTracer::Render(const SceneAccel& scene, const FrameSettings& settings, i
             images.flow = m_HalfFlow.Get();
             images.flowTrust = m_HalfFlowTrust.Get();
             images.output = m_HalfDenoised.Get();
+            if (settings.reflections)
+            {
+                images.secondInput = m_HalfSpecularInput.Get();
+                images.secondOutput = m_HalfSpecularDenoised.Get();
+            }
             m_DenoiserRunning = downsampled && m_Denoiser.Run(images);
         }
         else
@@ -438,6 +484,11 @@ void RayTracer::Render(const SceneAccel& scene, const FrameSettings& settings, i
             images.flow = m_Flow.Get();
             images.flowTrust = m_FlowTrust.Get();
             images.output = m_Denoised.Get();
+            if (settings.reflections)
+            {
+                images.secondInput = m_SpecularDenoiserInput.Get();
+                images.secondOutput = m_SpecularDenoised.Get();
+            }
             m_DenoiserRunning = m_Denoiser.Run(images);
         }
         m_DenoiserWasHalfResolution = halfResolution;

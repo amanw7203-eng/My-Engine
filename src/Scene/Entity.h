@@ -1,9 +1,11 @@
 #pragma once
 
+#include "Scene/Light.h"
 #include "Scene/Transform.h"
 
 #include <glm/glm.hpp>
 
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -21,6 +23,7 @@ public:
     std::string name;
     Transform transform;              // relative to the parent
     const Mesh* mesh = nullptr;       // not owned; nullptr = nothing drawn
+    std::optional<PointLight> light;  // set if the entity is (also) a light
     Material* material = nullptr;     // not owned, may be shared; nullptr = default grey
     bool visible = true;              // false also hides all children
 

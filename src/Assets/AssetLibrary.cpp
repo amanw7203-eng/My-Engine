@@ -142,9 +142,6 @@ void AssetLibrary::QueueImport(std::filesystem::path path)
 
 void AssetLibrary::ProcessQueuedImports()
 {
-    // Last frame's UI has been drawn, so nothing refers to these any more.
-    m_RemovedTextures.clear();
-
     std::vector<std::filesystem::path> queued;
     {
         std::lock_guard lock(m_QueueMutex);
@@ -223,7 +220,7 @@ void AssetLibrary::RemoveTexture(const Texture* texture)
     {
         if (it->texture.get() == texture)
         {
-            m_RemovedTextures.push_back(std::move(it->texture));
+            m_RemovedTextures.push_back(std::move(*it));
             m_Textures.erase(it);
             break;
         }
@@ -253,7 +250,73 @@ Material* AssetLibrary::DuplicateMaterial(const Material& source)
 
 void AssetLibrary::RemoveMaterial(const Material* material)
 {
-    std::erase_if(m_Materials, [&](const std::unique_ptr<Material>& m) { return m.get() == material; });
+    // Kept rather than freed: see the header.
+    const auto it = std::find_if(m_Materials.begin(), m_Materials.end(),
+                                 [&](const std::unique_ptr<Material>& m) { return m.get() == material; });
+    if (it != m_Materials.end())
+    {
+        m_RemovedMaterials.push_back(std::move(*it));
+        m_Materials.erase(it);
+    }
+}
+
+AssetLibrary::State AssetLibrary::CaptureState() const
+{
+    State state;
+    state.textures.reserve(m_Textures.size());
+    for (const NamedTexture& entry : m_Textures)
+        state.textures.push_back({ entry.texture.get(), entry.name, static_cast<int>(entry.texture->colorSpace) });
+    state.materials.reserve(m_Materials.size());
+    for (const std::unique_ptr<Material>& material : m_Materials)
+        state.materials.push_back({ material.get(), *material });
+    return state;
+}
+
+void AssetLibrary::RestoreState(const State& state)
+{
+    // Textures: gather every one (listed or removed), relist the state's in
+    // its order with its names and settings, keep the rest as removed.
+    std::vector<NamedTexture> texturePool;
+    for (auto* list : { &m_Textures, &m_RemovedTextures })
+    {
+        for (NamedTexture& entry : *list)
+            texturePool.push_back(std::move(entry));
+        list->clear();
+    }
+    for (const TextureState& s : state.textures)
+    {
+        const auto it = std::find_if(texturePool.begin(), texturePool.end(),
+                                     [&](const NamedTexture& e) { return e.texture.get() == s.texture; });
+        if (it == texturePool.end())
+            continue; // can't happen: textures are never freed
+        it->name = s.name;
+        it->texture->colorSpace = static_cast<Texture::ColorSpace>(s.colorSpace);
+        m_Textures.push_back(std::move(*it));
+    }
+    for (NamedTexture& entry : texturePool)
+        if (entry.texture)
+            m_RemovedTextures.push_back(std::move(entry));
+
+    // Materials, the same way.
+    std::vector<std::unique_ptr<Material>> materialPool;
+    for (auto* list : { &m_Materials, &m_RemovedMaterials })
+    {
+        for (std::unique_ptr<Material>& material : *list)
+            materialPool.push_back(std::move(material));
+        list->clear();
+    }
+    for (const MaterialState& s : state.materials)
+    {
+        const auto it = std::find_if(materialPool.begin(), materialPool.end(),
+                                     [&](const std::unique_ptr<Material>& m) { return m.get() == s.material; });
+        if (it == materialPool.end())
+            continue;
+        **it = s.value;
+        m_Materials.push_back(std::move(*it));
+    }
+    for (std::unique_ptr<Material>& material : materialPool)
+        if (material)
+            m_RemovedMaterials.push_back(std::move(material));
 }
 
 const char* AssetLibrary::GetName(const Mesh* mesh) const

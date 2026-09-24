@@ -43,10 +43,16 @@ public:
     void Draw(const Shader& shader, const Material& defaultMaterial, const Texture& whiteTexture,
               std::vector<Entity*>* drawnEntities = nullptr) const;
 
-    // Calls fn(entity, worldMatrix) for every visible entity that has a
-    // mesh, parents before children: exactly the entities Draw draws.
-    using DrawableCallback = std::function<void(Entity& entity, const glm::mat4& world)>;
+    // Calls fn(entity, worldMatrix) for every visible entity, parents
+    // before children...
+    using EntityCallback = std::function<void(Entity& entity, const glm::mat4& world)>;
+    void ForEachVisible(const EntityCallback& fn) const;
+    // ...that has a mesh: exactly the entities Draw draws.
+    using DrawableCallback = EntityCallback;
     void ForEachDrawable(const DrawableCallback& fn) const;
+
+    // Every visible point light, placed in the world, in linear light.
+    std::vector<ScenePointLight> GatherPointLights() const;
 
     // Points a material shader's texture samplers at the texture units Draw
     // binds each map to. The shader must be bound.
@@ -58,8 +64,35 @@ public:
     // How many entities use `material` (Blender's "users" count).
     int CountUsers(const Material* material) const;
 
+    // True if `entity` is in the scene (not destroyed).
+    bool Contains(const Entity* entity) const;
+
+    // --- Undo support ---
+    // One entity's editable state and its place in the tree.
+    struct EntityState
+    {
+        Entity* entity = nullptr;
+        Entity* parent = nullptr;
+        std::string name;
+        Transform transform;
+        const Mesh* mesh = nullptr;
+        Material* material = nullptr;
+        std::optional<PointLight> light;
+        bool visible = true;
+
+        bool operator==(const EntityState&) const = default;
+    };
+    // Every entity, parents before children and children in order, so
+    // restoring them in this order rebuilds the same tree.
+    using State = std::vector<EntityState>;
+    State CaptureState() const;
+    // Makes the scene exactly `state`: entities destroyed since are brought
+    // back (the same objects: destroyed entities are kept, not freed, so
+    // pointers to them stay valid), and ones created since are destroyed.
+    void RestoreState(const State& state);
+
 private:
-    static void VisitDrawables(Entity& entity, const glm::mat4& parentWorld, const DrawableCallback& fn);
+    static void VisitVisible(Entity& entity, const glm::mat4& parentWorld, const EntityCallback& fn);
 
     // Removes the entity from its parent's (or the root) child list.
     void Detach(Entity& entity);
@@ -68,4 +101,6 @@ private:
     // in the tree stay valid as entities are added and removed.
     std::vector<std::unique_ptr<Entity>> m_Entities;
     std::vector<Entity*> m_Roots;
+    // Destroyed entities, kept so undo can bring them back (see RestoreState).
+    std::vector<std::unique_ptr<Entity>> m_Destroyed;
 };

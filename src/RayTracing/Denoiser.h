@@ -41,6 +41,10 @@ public:
         CUdeviceptr flow;        // float2: how far each pixel moved since last frame
         CUdeviceptr flowTrust;   // float: 0..1, how much to trust that
         CUdeviceptr output;      // float4, RGB; keep it for the next frame, which reads it
+        // Optional: a second image denoised along with the first (with the
+        // same guides, by the same run), e.g. reflections. 0 if none.
+        CUdeviceptr secondInput;
+        CUdeviceptr secondOutput;
     };
 
     // Denoises images.input into images.output. Queued on the stream;

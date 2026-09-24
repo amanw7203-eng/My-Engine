@@ -9,6 +9,7 @@
 #include <glad/gl.h>
 
 #include <algorithm>
+#include <functional>
 
 Entity& Scene::CreateEntity(std::string name, Entity* parent)
 {
@@ -25,7 +26,87 @@ void Scene::DestroyEntity(Entity& entity)
         DestroyEntity(*entity.m_Children.back());
 
     Detach(entity);
-    std::erase_if(m_Entities, [&](const std::unique_ptr<Entity>& e) { return e.get() == &entity; });
+    // Kept rather than freed, so undo can bring back this very entity.
+    const auto it = std::find_if(m_Entities.begin(), m_Entities.end(),
+                                 [&](const std::unique_ptr<Entity>& e) { return e.get() == &entity; });
+    if (it != m_Entities.end())
+    {
+        m_Destroyed.push_back(std::move(*it));
+        m_Entities.erase(it);
+    }
+}
+
+bool Scene::Contains(const Entity* entity) const
+{
+    return std::any_of(m_Entities.begin(), m_Entities.end(),
+                       [&](const std::unique_ptr<Entity>& e) { return e.get() == entity; });
+}
+
+Scene::State Scene::CaptureState() const
+{
+    State state;
+    state.reserve(m_Entities.size());
+    // Depth first, children in order: restoring in this order appends each
+    // entity to its parent's child list in the original order.
+    std::function<void(Entity&)> visit = [&](Entity& entity) {
+        EntityState& s = state.emplace_back();
+        s.entity = &entity;
+        s.parent = entity.m_Parent;
+        s.name = entity.name;
+        s.transform = entity.transform;
+        s.mesh = entity.mesh;
+        s.material = entity.material;
+        s.light = entity.light;
+        s.visible = entity.visible;
+        for (Entity* child : entity.m_Children)
+            visit(*child);
+    };
+    for (Entity* root : m_Roots)
+        visit(*root);
+    return state;
+}
+
+void Scene::RestoreState(const State& state)
+{
+    // Every entity object we have, alive or destroyed, gathered in one pool.
+    std::vector<std::unique_ptr<Entity>> pool;
+    pool.reserve(m_Entities.size() + m_Destroyed.size());
+    for (auto* list : { &m_Entities, &m_Destroyed })
+    {
+        for (std::unique_ptr<Entity>& entity : *list)
+            pool.push_back(std::move(entity));
+        list->clear();
+    }
+    for (std::unique_ptr<Entity>& entity : pool)
+    {
+        entity->m_Parent = nullptr;
+        entity->m_Children.clear();
+    }
+    m_Roots.clear();
+
+    // The state's entities come back to life, rebuilt into the tree...
+    for (const EntityState& s : state)
+    {
+        const auto it = std::find_if(pool.begin(), pool.end(),
+                                     [&](const std::unique_ptr<Entity>& e) { return e.get() == s.entity; });
+        if (it == pool.end())
+            continue; // can't happen: entities are never freed
+        Entity& entity = **it;
+        entity.name = s.name;
+        entity.transform = s.transform;
+        entity.mesh = s.mesh;
+        entity.material = s.material;
+        entity.light = s.light;
+        entity.visible = s.visible;
+        entity.m_Parent = s.parent;
+        (s.parent ? s.parent->m_Children : m_Roots).push_back(&entity);
+        m_Entities.push_back(std::move(*it));
+    }
+
+    // ...and the rest are destroyed (kept for a later redo).
+    for (std::unique_ptr<Entity>& entity : pool)
+        if (entity)
+            m_Destroyed.push_back(std::move(entity));
 }
 
 bool Scene::SetParent(Entity& entity, Entity* newParent)
@@ -131,10 +212,35 @@ void Scene::Draw(const Shader& shader, const Material& defaultMaterial, const Te
     });
 }
 
-void Scene::ForEachDrawable(const DrawableCallback& fn) const
+void Scene::ForEachVisible(const EntityCallback& fn) const
 {
     for (Entity* root : m_Roots)
-        VisitDrawables(*root, glm::mat4(1.0f), fn);
+        VisitVisible(*root, glm::mat4(1.0f), fn);
+}
+
+void Scene::ForEachDrawable(const DrawableCallback& fn) const
+{
+    ForEachVisible([&](Entity& entity, const glm::mat4& world) {
+        if (entity.mesh)
+            fn(entity, world);
+    });
+}
+
+std::vector<ScenePointLight> Scene::GatherPointLights() const
+{
+    std::vector<ScenePointLight> lights;
+    ForEachVisible([&](Entity& entity, const glm::mat4& world) {
+        if (!entity.light)
+            return;
+        const PointLight& light = *entity.light;
+        ScenePointLight& placed = lights.emplace_back();
+        placed.position = glm::vec3(world[3]);
+        // The picker shows sRGB; lighting works in linear light.
+        placed.radiance = SrgbToLinear(light.color) * std::max(light.intensity, 0.0f);
+        placed.range = std::max(light.range, 0.01f);
+        placed.castShadows = light.castShadows;
+    });
+    return lights;
 }
 
 void Scene::ClearMaterial(const Material* material)
@@ -152,7 +258,7 @@ int Scene::CountUsers(const Material* material) const
                                           [&](const std::unique_ptr<Entity>& e) { return e->material == material; }));
 }
 
-void Scene::VisitDrawables(Entity& entity, const glm::mat4& parentWorld, const DrawableCallback& fn)
+void Scene::VisitVisible(Entity& entity, const glm::mat4& parentWorld, const EntityCallback& fn)
 {
     if (!entity.visible)
         return; // hides the whole subtree
@@ -160,12 +266,10 @@ void Scene::VisitDrawables(Entity& entity, const glm::mat4& parentWorld, const D
     // Walking down the tree, each entity's world matrix is its parent's
     // world matrix times its own local one.
     const glm::mat4 world = parentWorld * entity.transform.GetMatrix();
-
-    if (entity.mesh)
-        fn(entity, world);
+    fn(entity, world);
 
     for (Entity* child : entity.m_Children)
-        VisitDrawables(*child, world, fn);
+        VisitVisible(*child, world, fn);
 }
 
 void Scene::Detach(Entity& entity)

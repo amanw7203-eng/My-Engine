@@ -11,6 +11,7 @@
 
 class Entity;
 class MeshAccelCache;
+class TextureCache;
 class OptixContext;
 class Scene;
 struct Material;
@@ -29,7 +30,8 @@ public:
 
     // Rebuilds from the entities Scene::Draw would draw. The build is queued
     // on the context's stream, so work queued after it sees the result.
-    void Build(const Scene& scene, MeshAccelCache& meshAccels, const Material& defaultMaterial);
+    void Build(const Scene& scene, MeshAccelCache& meshAccels, TextureCache& textures,
+               const Material& defaultMaterial);
 
     // 0 for an empty scene: rays traced against it just miss.
     OptixTraversableHandle GetHandle() const { return m_Handle; }

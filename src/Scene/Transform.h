@@ -12,6 +12,8 @@ struct Transform
     glm::vec3 rotation{ 0.0f }; // Euler angles in degrees around X, Y, Z
     glm::vec3 scale{ 1.0f };
 
+    bool operator==(const Transform&) const = default;
+
     // Scale first, then rotate, then move (matrices apply right to left).
     glm::mat4 GetMatrix() const
     {

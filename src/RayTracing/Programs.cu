@@ -59,6 +59,10 @@ static __forceinline__ __device__ float3 Splat(float s) { return make_float3(s, 
 
 constexpr float kPi = 3.14159265f;
 
+// How fast a ray cone widens after a diffuse bounce (radians): a rough
+// stand-in for the whole hemisphere a diffuse surface scatters into.
+constexpr float kDiffuseConeSpread = 0.3f;
+
 // GGX / Trowbridge-Reitz normal distribution: how many facets are angled
 // so that they reflect the light straight at the camera (face H).
 static __forceinline__ __device__ float DistributionGgx(float NdotH, float alpha)
@@ -102,6 +106,38 @@ static __forceinline__ __device__ float3 EnvironmentBrdf(float3 F0, float roughn
     return F0 * scale + Splat(bias);
 }
 
+// Light arriving from direction L (surface -> light) and reflected towards
+// V, per unit of light: the Cook-Torrance BRDF times the cosine of the
+// angle the light comes in at.
+//
+// A light's color is how bright a white surface facing it looks (for a
+// point light, from 1 unit away), as in lit.frag, so both renderers match
+// under the same settings. With the 1/pi in the diffuse BRDF, that means an
+// irradiance of pi * color, hence the pi here.
+static __forceinline__ __device__ float3 ReflectedLight(float3 N, float3 V, float NdotV, float3 L, float3 diffuseColor,
+                                                        float3 F0, float alpha)
+{
+    const float NdotL = fmaxf(Dot(N, L), 0.0f);
+    const float3 H = Normalize(L + V);
+    const float NdotH = fmaxf(Dot(N, H), 0.0f);
+    const float VdotH = fmaxf(Dot(V, H), 0.0f);
+
+    const float3 F = FresnelSchlick(VdotH, F0);
+    const float3 specular = F * (DistributionGgx(NdotH, alpha) * VisibilitySmithGgx(NdotL, NdotV, alpha));
+    // Light reflected at the surface (F) never gets in to scatter diffusely.
+    const float3 diffuse = (Splat(1.0f) - F) * diffuseColor / kPi;
+    return (diffuse + specular) * (kPi * NdotL);
+}
+
+// 1 at a point light, falling smoothly to 0 at its range, so light doesn't
+// stop at a visible edge (as in lit.frag and Unreal: (1 - (d / range)^4)^2).
+static __forceinline__ __device__ float RangeFade(float distance, float range)
+{
+    const float x = distance / range;
+    const float fade = fminf(fmaxf(1.0f - x * x * x * x, 0.0f), 1.0f);
+    return fade * fade;
+}
+
 // --- Random numbers ---------------------------------------------------------
 
 // PCG hash (Jarzynski & Olano, "Hash Functions for GPU Rendering"): a
@@ -125,6 +161,17 @@ static __forceinline__ __device__ float Random(unsigned int& seed)
 // in proportion to cos(angle) (cosine-weighted, Malley's method). That is
 // exactly how a diffuse surface scatters light, so each bounce ray carries
 // equal weight and no cosine / pdf factors need applying.
+// Two axes perpendicular to unit vector n, and to each other (Duff et al.,
+// "Building an Orthonormal Basis, Revisited").
+static __forceinline__ __device__ void PerpendicularAxes(float3 n, float3& tangent, float3& bitangent)
+{
+    const float sign = copysignf(1.0f, n.z);
+    const float a = -1.0f / (sign + n.z);
+    const float b = n.x * n.y * a;
+    tangent = make_float3(1.0f + sign * n.x * n.x * a, sign * b, -sign * n.x);
+    bitangent = make_float3(b, sign + n.y * n.y * a, -n.y);
+}
+
 static __forceinline__ __device__ float3 CosineSampleHemisphere(float3 n, unsigned int& seed)
 {
     // Uniform point on a disk, projected up onto the hemisphere.
@@ -134,15 +181,47 @@ static __forceinline__ __device__ float3 CosineSampleHemisphere(float3 n, unsign
     const float y = r * sinf(phi);
     const float z = sqrtf(fmaxf(1.0f - x * x - y * y, 0.0f));
 
-    // Two axes perpendicular to n (Duff et al., "Building an Orthonormal
-    // Basis, Revisited").
-    const float sign = copysignf(1.0f, n.z);
-    const float a = -1.0f / (sign + n.z);
-    const float b = n.x * n.y * a;
-    const float3 tangent = make_float3(1.0f + sign * n.x * n.x * a, sign * b, -sign * n.x);
-    const float3 bitangent = make_float3(b, sign + n.y * n.y * a, -n.y);
-
+    float3 tangent, bitangent;
+    PerpendicularAxes(n, tangent, bitangent);
     return tangent * x + bitangent * y + n * z;
+}
+
+// A random microfacet normal for a glossy reflection off surface normal N,
+// seen from direction V, picked the way GGX spreads them but only among the
+// facets V can actually see (Heitz, "Sampling the GGX Distribution of
+// Visible Normals", 2018). Reflecting V about it gives a direction spread
+// as the material scatters light: tight when smooth, wide when rough.
+static __forceinline__ __device__ float3 SampleGgxVisibleNormal(float3 N, float3 V, float alpha, unsigned int& seed)
+{
+    // V in the surface's frame (N = +Z).
+    float3 tangent, bitangent;
+    PerpendicularAxes(N, tangent, bitangent);
+    const float3 v = make_float3(Dot(V, tangent), Dot(V, bitangent), Dot(V, N));
+
+    // Stretch the view into the space where the facets form a hemisphere...
+    const float3 vh = Normalize(make_float3(alpha * v.x, alpha * v.y, v.z));
+    const float lengthSquared = vh.x * vh.x + vh.y * vh.y;
+    const float3 t1 = lengthSquared > 0.0f ? make_float3(-vh.y, vh.x, 0.0f) * rsqrtf(lengthSquared)
+                                           : make_float3(1.0f, 0.0f, 0.0f);
+    const float3 t2 = Cross(vh, t1);
+    // ...pick a point on the part of it facing the view...
+    const float r = sqrtf(Random(seed));
+    const float phi = 2.0f * kPi * Random(seed);
+    const float p1 = r * cosf(phi);
+    float p2 = r * sinf(phi);
+    const float s = 0.5f * (1.0f + vh.z);
+    p2 = (1.0f - s) * sqrtf(fmaxf(1.0f - p1 * p1, 0.0f)) + s * p2;
+    const float3 nh = t1 * p1 + t2 * p2 + vh * sqrtf(fmaxf(1.0f - p1 * p1 - p2 * p2, 0.0f));
+    // ...and un-stretch it back into a facet normal.
+    const float3 m = Normalize(make_float3(alpha * nh.x, alpha * nh.y, fmaxf(nh.z, 0.0f)));
+
+    return tangent * m.x + bitangent * m.y + N * m.z;
+}
+
+// How bright a color looks (Rec. 709 weights).
+static __forceinline__ __device__ float Luminance(float3 c)
+{
+    return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
 }
 
 // --- Helpers ----------------------------------------------------------------
@@ -172,15 +251,24 @@ static __forceinline__ __device__ float3 Unproject(float x, float y, float z)
 // the ray's two payload registers; the closest-hit program fills it in.
 struct SurfaceHit
 {
+    // Filled in by the caller: the ray as a cone, `coneWidth` wide at its
+    // origin and widening by `coneSpread` per unit of distance. How wide it
+    // is where it hits decides how blurry a texture mip level to read.
+    float coneWidth;
+    float coneSpread;
+
+    // Filled in by the closest-hit program.
     bool hit;
+    float distance;          // along the ray
     float3 position;
     float3 previousPosition; // where that point of the surface was last frame
     float3 geometricNormal;  // the flat triangle's, facing the side the ray came from
-    float3 normal;           // interpolated, for shading; same side as geometricNormal
-    float3 baseColor;        // linear, material color times vertex color
+    float3 normal;           // for shading (interpolated, normal-mapped); same side as geometricNormal
+    float3 baseColor;        // linear: material color * vertex color * base color map
     float3 emission;
     float metallic;
     float roughness;
+    float ao;                // 1 = unoccluded, from the AO map
 };
 
 static __forceinline__ __device__ SurfaceHit* GetSurfaceHit()
@@ -192,10 +280,12 @@ static __forceinline__ __device__ SurfaceHit* GetSurfaceHit()
 
 // Traces a path ray, returning what it hit (hit == false if nothing).
 static __forceinline__ __device__ SurfaceHit TraceSurface(float3 origin, float3 direction, float tMax,
-                                                          unsigned int rayFlags)
+                                                          unsigned int rayFlags, float coneWidth, float coneSpread)
 {
     SurfaceHit surface;
     surface.hit = false;
+    surface.coneWidth = coneWidth;
+    surface.coneSpread = coneSpread;
     const unsigned long long pointer = reinterpret_cast<unsigned long long>(&surface);
     unsigned int high = static_cast<unsigned int>(pointer >> 32);
     unsigned int low = static_cast<unsigned int>(pointer);
@@ -206,13 +296,13 @@ static __forceinline__ __device__ SurfaceHit TraceSurface(float3 origin, float3 
     return surface;
 }
 
-// Is there a clear line from `origin` towards `direction`, to infinity?
-// Any hit at all answers the question, so the trace stops at the first one
-// and skips the closest-hit program.
-static __forceinline__ __device__ bool IsUnblocked(float3 origin, float3 direction)
+// Is there a clear line from `origin` towards `direction`, for `distance`
+// (to infinity by default)? Any hit at all answers the question, so the
+// trace stops at the first one and skips the closest-hit program.
+static __forceinline__ __device__ bool IsUnblocked(float3 origin, float3 direction, float distance = 1e16f)
 {
     unsigned int visible = 0;
-    optixTrace(params.scene, origin, direction, 0.0f, 1e16f, 0.0f,
+    optixTrace(params.scene, origin, direction, 0.0f, distance, 0.0f,
                OptixVisibilityMask(0xFF),
                OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT | OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT,
                0, 1, RAY_TYPE_SHADOW,
@@ -227,17 +317,28 @@ static __forceinline__ __device__ float3 OffsetFromSurface(const SurfaceHit& s)
     return s.position + s.geometricNormal * 1e-3f;
 }
 
-// The light arriving along one path, in the two parts LaunchParams
-// describes.
+// The light arriving along one path, in the parts LaunchParams describes.
+// The indirect parts are demodulated: stored as if the first surface
+// reflected everything, then multiplied by its albedo after denoising.
 struct PathLight
 {
     float3 direct;
-    float3 indirect;      // demodulated: as if the first surface were white
-    float3 diffuseAlbedo; // the first surface's: multiply `indirect` by it
+    float3 diffuse;        // light scattered in diffusely at the first surface
+    float3 specular;       // light reflected (mirror-like to glossy) off it
+    float3 diffuseAlbedo;  // the first surface's: multiply `diffuse` by it
+    float3 specularAlbedo; // and `specular` by this
+    float roughness;       // the first surface's
 };
 
 // One light path through the pixel point (x, y) (in normalized device
 // coordinates): the linear light seen along it.
+//
+// At each surface the path gathers the direct light (sun and point lights,
+// by shadow rays), then carries on in one new direction, picked at random
+// in proportion to where the surface sends light: a reflection (sampled
+// from the GGX lobe, so as sharp or blurred as the roughness makes it) or a
+// diffuse bounce. Averaged over many paths that is exactly the surface's
+// full PBR response to everything around it, for one ray per bounce.
 static __device__ PathLight TracePath(float x, float y, unsigned int& seed)
 {
     // The camera ray goes from the near plane to the far plane, so it sees
@@ -252,26 +353,31 @@ static __device__ PathLight TracePath(float x, float y, unsigned int& seed)
     float tMax = rayLength;
     // Back-face culling is a camera setting: bounce rays see every face.
     unsigned int rayFlags = params.cullBackFaces ? OPTIX_RAY_FLAG_CULL_BACK_FACING_TRIANGLES : OPTIX_RAY_FLAG_NONE;
+    // The camera ray starts as a point and widens by one pixel's angle.
+    float coneWidth = 0.0f;
+    float coneSpread = params.pixelSpreadAngle;
 
     const float3 L = Normalize(-params.lightDir); // surface -> sun
 
     PathLight light;
     light.direct = Splat(0.0f);
-    light.indirect = Splat(0.0f);
+    light.diffuse = Splat(0.0f);
+    light.specular = Splat(0.0f);
     light.diffuseAlbedo = Splat(0.0f);
+    light.specularAlbedo = Splat(0.0f);
+    light.roughness = 1.0f;
 
-    // Light at the first surface counts as direct, everything from later
-    // bounces as indirect.
+    // Light at the first surface counts as direct; what comes back along
+    // the first bounce goes to `diffuse` or `specular`, by which lobe it took.
     float3* out = &light.direct;
     // How much of the light arriving at the current surface reaches the
-    // camera: each bounce multiplies in the color of the surface it left,
-    // except the first surface's, which is left out of the indirect light
-    // (demodulation) and multiplied back in after denoising.
+    // camera: each bounce multiplies in how much the surface it left sends
+    // on, except the first, whose albedo is divided out (demodulation).
     float3 throughput = Splat(1.0f);
 
     for (unsigned int bounce = 0;; ++bounce)
     {
-        const SurfaceHit s = TraceSurface(origin, direction, tMax, rayFlags);
+        const SurfaceHit s = TraceSurface(origin, direction, tMax, rayFlags, coneWidth, coneSpread);
         if (!s.hit)
         {
             // The camera sees the background; a bounce ray escaping into
@@ -304,59 +410,129 @@ static __device__ PathLight TracePath(float x, float y, unsigned int& seed)
         if (NdotL > 0.0f && (!params.shadowsEnabled ||
                              (Dot(s.geometricNormal, L) > 0.0f && IsUnblocked(OffsetFromSurface(s), L))))
         {
-            const float3 H = Normalize(L + V);
-            const float NdotH = fmaxf(Dot(N, H), 0.0f);
-            const float VdotH = fmaxf(Dot(V, H), 0.0f);
-
-            const float3 F = FresnelSchlick(VdotH, F0);
-            const float3 specular = F * (DistributionGgx(NdotH, alpha) * VisibilitySmithGgx(NdotL, NdotV, alpha));
-            // Light reflected at the surface (F) never gets in to scatter diffusely.
-            const float3 diffuse = (Splat(1.0f) - F) * diffuseColor / kPi;
-
-            // The sun color is how bright a white surface facing it looks,
-            // as in lit.frag, so both renderers match under the same
-            // settings. With the 1/pi in the diffuse BRDF, that means an
-            // irradiance of pi * color.
-            *out += throughput * (diffuse + specular) * params.lightColor * (kPi * NdotL);
+            *out += throughput * ReflectedLight(N, V, NdotV, L, diffuseColor, F0, alpha) * params.lightColor;
         }
 
-        // --- Ambient light ---
-        // Split by the environment BRDF into what the surface reflects
-        // specularly and what gets in and scatters diffusely.
-        const float3 ambientSpecular = EnvironmentBrdf(F0, roughness, NdotV);
-        const float3 diffuseWeight = diffuseColor * (Splat(1.0f) - ambientSpecular);
+        // --- Direct light from point lights ---
+        for (unsigned int i = 0; i < params.pointLightCount; ++i)
+        {
+            const DevicePointLight& pointLight = params.pointLights[i];
+            const float3 toLight = pointLight.position - s.position;
+            const float distanceSquared = Dot(toLight, toLight);
+            if (distanceSquared >= pointLight.range * pointLight.range)
+                continue;
+            const float distance = sqrtf(distanceSquared);
+            const float3 toLightDir = toLight / distance;
+            if (Dot(N, toLightDir) <= 0.0f)
+                continue;
+            // The light is behind the triangle itself, or something is in
+            // the way (the shadow ray stops just short of the light).
+            if (params.shadowsEnabled && pointLight.castShadows &&
+                (Dot(s.geometricNormal, toLightDir) <= 0.0f ||
+                 !IsUnblocked(OffsetFromSurface(s), toLightDir, distance - 1e-3f)))
+                continue;
+
+            // Weaker with the square of the distance (kept a little away
+            // from 0 so a surface touching the light isn't infinitely
+            // bright), fading to nothing at the range, as in lit.frag.
+            const float3 irradiance =
+                pointLight.radiance * (RangeFade(distance, pointLight.range) / fmaxf(distanceSquared, 0.01f));
+            *out += throughput * ReflectedLight(N, V, NdotV, toLightDir, diffuseColor, F0, alpha) * irradiance;
+        }
+
+        // --- Light from everything else ---
+        // How much of the light around it the surface reflects specularly
+        // (the environment BRDF), and how much gets in and scatters
+        // diffusely. The AO map darkens both, as in lit.frag: it stands for
+        // crevices too small to be in the geometry, which rays can't find.
+        const float3 environmentBrdf = EnvironmentBrdf(F0, roughness, NdotV);
+        const float3 specularWeight = environmentBrdf * s.ao;
+        const float3 diffuseWeight = diffuseColor * (Splat(1.0f) - environmentBrdf) * s.ao;
 
         if (bounce == 0)
+        {
             light.diffuseAlbedo = diffuseWeight;
+            light.specularAlbedo = specularWeight;
+            light.roughness = roughness;
+        }
 
-        // Specular: the sky as if nothing blocked it. (Reflection rays
-        // would replace this with what is really there.)
-        *out += throughput * params.ambientColor * ambientSpecular;
-
-        // Diffuse: out of bounces, assume open sky, like the raster path.
-        // Otherwise follow the light back one more step: pick a direction
-        // the way a diffuse surface scatters, and see what light arrives
-        // from there, whether sky or another lit surface.
+        // Out of bounces: assume open sky all round, like the raster path.
+        // Without reflections, specular always does, as it did before.
+        if (!params.reflections)
+            *out += throughput * params.ambientColor * specularWeight;
         if (bounce >= params.maxBounces)
         {
+            if (params.reflections)
+                *out += throughput * params.ambientColor * specularWeight;
             *out += throughput * params.ambientColor * diffuseWeight;
             break;
         }
 
-        const float3 bounceDir = CosineSampleHemisphere(N, seed);
-        // With a tilted shading normal, a direction can point into the
-        // surface itself; that light can't arrive, so the path ends.
-        if (Dot(bounceDir, s.geometricNormal) <= 0.0f)
-            break;
+        // Otherwise follow the light back one more step, along a direction
+        // picked from one of the two lobes, chosen in proportion to how much
+        // light each sends on (so a metal always reflects, a matte surface
+        // mostly scatters). Dividing by the chance of the choice keeps the
+        // average right.
+        const float specularShare = Luminance(specularWeight);
+        const float diffuseShare = Luminance(diffuseWeight);
+        float specularChance = 0.0f;
+        if (params.reflections && specularShare > 0.0f)
+            specularChance = diffuseShare > 0.0f ? fminf(fmaxf(specularShare / (specularShare + diffuseShare), 0.1f), 0.9f)
+                                                 : 1.0f;
+        const bool reflect = Random(seed) < specularChance;
+
+        float3 nextDirection;
+        float3 weight; // light arriving along nextDirection -> light leaving towards V
+        if (reflect)
+        {
+            // Mirror V about a facet normal picked from the visible GGX
+            // facets. For that sampling the BRDF * cosine / probability comes
+            // out as Fresnel times the share of facets the light isn't
+            // blocked from: F * G2 / G1.
+            const float3 H = SampleGgxVisibleNormal(N, V, alpha, seed);
+            nextDirection = H * (2.0f * Dot(V, H)) - V;
+            const float NdotNext = Dot(N, nextDirection);
+            if (NdotNext <= 0.0f || Dot(nextDirection, s.geometricNormal) <= 0.0f)
+                break; // reflected into the surface: no light comes from there
+            const float a2 = alpha * alpha;
+            const float g1View = 2.0f * NdotV / (NdotV + sqrtf(a2 + (1.0f - a2) * NdotV * NdotV));
+            const float g2 = VisibilitySmithGgx(NdotNext, NdotV, alpha) * 4.0f * NdotNext * NdotV;
+            weight = FresnelSchlick(fmaxf(Dot(V, H), 0.0f), F0) * (g2 / g1View) * s.ao / specularChance;
+        }
+        else
+        {
+            // Pick a direction the way a diffuse surface scatters light.
+            nextDirection = CosineSampleHemisphere(N, seed);
+            // With a tilted shading normal, a direction can point into the
+            // surface itself; that light can't arrive, so the path ends.
+            if (Dot(nextDirection, s.geometricNormal) <= 0.0f)
+                break;
+            weight = diffuseWeight / (1.0f - specularChance);
+        }
 
         if (bounce == 0)
-            out = &light.indirect; // demodulated: throughput stays 1 here
+        {
+            // Demodulate: divide the first surface's albedo back out.
+            out = reflect ? &light.specular : &light.diffuse;
+            const float3 albedo = reflect ? specularWeight : diffuseWeight;
+            throughput = make_float3(albedo.x > 1e-4f ? weight.x / albedo.x : 0.0f,
+                                     albedo.y > 1e-4f ? weight.y / albedo.y : 0.0f,
+                                     albedo.z > 1e-4f ? weight.z / albedo.z : 0.0f);
+        }
         else
-            throughput *= diffuseWeight;
+        {
+            throughput *= weight;
+        }
+
         origin = OffsetFromSurface(s);
-        direction = bounceDir;
+        direction = nextDirection;
         tMax = 1e16f;
         rayFlags = OPTIX_RAY_FLAG_NONE;
+        // The cone widens with the lobe it took: a diffuse bounce scatters
+        // widely, a reflection about as much as the surface is rough. Later
+        // hits then read texture mip levels matching how blurry they appear.
+        coneWidth += s.distance * coneSpread;
+        coneSpread = reflect ? coneSpread + alpha : kDiffuseConeSpread;
     }
 
     return light;
@@ -370,6 +546,18 @@ static __forceinline__ __device__ float4 WithW(float3 v, float w) { return make_
 static __forceinline__ __device__ bool IsFinite(float3 v)
 {
     return isfinite(v.x) && isfinite(v.y) && isfinite(v.z);
+}
+
+// The most a single frame's bounced or reflected light (demodulated, so as
+// seen on a white surface) may be: a few times as bright as the sun lights
+// a white surface.
+constexpr float kMaxIndirectBrightness = 8.0f;
+
+// `c` scaled down, keeping its hue, if it is brighter than `maximum`.
+static __forceinline__ __device__ float3 ClampBrightness(float3 c, float maximum)
+{
+    const float brightness = Luminance(c);
+    return brightness > maximum ? c * (maximum / brightness) : c;
 }
 
 // Where world point `p` lands on screen through `viewProjection`, in pixels
@@ -415,7 +603,8 @@ static __device__ PixelSurface TracePixelCentre(const uint3& pixel)
 
     const SurfaceHit s = TraceSurface(nearPoint, toFar / rayLength, rayLength,
                                       params.cullBackFaces ? OPTIX_RAY_FLAG_CULL_BACK_FACING_TRIANGLES
-                                                           : OPTIX_RAY_FLAG_NONE);
+                                                           : OPTIX_RAY_FLAG_NONE,
+                                      0.0f, params.pixelSpreadAngle);
     p.hit = s.hit;
     p.position = s.position;
     p.previousPosition = s.previousPosition;
@@ -430,16 +619,23 @@ struct History
     float frames; // how many frames the averages hold
     float3 indirect;
     float3 albedo;
+    float3 specular;
+    float3 specularAlbedo;
+    float roughness;
 };
 
 static __forceinline__ __device__ History ReadHistory(unsigned int index)
 {
     const float4 direct = params.directIn[index];
+    const float4 specularAlbedo = params.specularAlbedoIn[index];
     History h;
     h.direct = Xyz(direct);
     h.frames = direct.w;
     h.indirect = Xyz(params.indirectIn[index]);
     h.albedo = Xyz(params.albedoIn[index]);
+    h.specular = Xyz(params.specularIn[index]);
+    h.specularAlbedo = Xyz(specularAlbedo);
+    h.roughness = specularAlbedo.w;
     return h;
 }
 
@@ -497,6 +693,9 @@ static __device__ bool FetchReprojectedHistory(float2 previousPixel, const Pixel
             sum.frames += h.frames * weight;
             sum.indirect += h.indirect * weight;
             sum.albedo += h.albedo * weight;
+            sum.specular += h.specular * weight;
+            sum.specularAlbedo += h.specularAlbedo * weight;
+            sum.roughness += h.roughness * weight;
             weightSum += weight;
         }
     }
@@ -508,6 +707,9 @@ static __device__ bool FetchReprojectedHistory(float2 previousPixel, const Pixel
     history.frames = sum.frames / weightSum;
     history.indirect = sum.indirect / weightSum;
     history.albedo = sum.albedo / weightSum;
+    history.specular = sum.specular / weightSum;
+    history.specularAlbedo = sum.specularAlbedo / weightSum;
+    history.roughness = sum.roughness / weightSum;
     return true;
 }
 
@@ -523,9 +725,7 @@ extern "C" __global__ void __raygen__trace()
     // A different random sequence for every pixel, frame and sample.
     unsigned int seed = PcgHash(pixelIndex ^ PcgHash(params.randomSeed));
 
-    float3 direct = Splat(0.0f);
-    float3 indirect = Splat(0.0f);
-    float3 albedo = Splat(0.0f);
+    PathLight sum = {};
     for (unsigned int sample = 0; sample < params.samplesPerPixel; ++sample)
     {
         // A random point inside the pixel rather than its centre: averaged
@@ -534,25 +734,25 @@ extern "C" __global__ void __raygen__trace()
         const float x = (pixel.x + Random(seed)) / params.width * 2.0f - 1.0f;
         const float y = (pixel.y + Random(seed)) / params.height * 2.0f - 1.0f;
 
-        PathLight light;
+        PathLight light = {};
         if (params.scene)
-        {
             light = TracePath(x, y, seed);
-        }
         else
-        {
             light.direct = params.background;
-            light.indirect = Splat(0.0f);
-            light.diffuseAlbedo = Splat(0.0f);
-        }
-        direct += light.direct;
-        indirect += light.indirect;
-        albedo += light.diffuseAlbedo;
+        sum.direct += light.direct;
+        sum.diffuse += light.diffuse;
+        sum.specular += light.specular;
+        sum.diffuseAlbedo += light.diffuseAlbedo;
+        sum.specularAlbedo += light.specularAlbedo;
+        sum.roughness += light.roughness;
     }
     const float samples = static_cast<float>(params.samplesPerPixel);
-    direct = direct / samples;
-    indirect = indirect / samples;
-    albedo = albedo / samples;
+    float3 direct = sum.direct / samples;
+    float3 indirect = sum.diffuse / samples;
+    float3 specular = sum.specular / samples;
+    const float3 albedo = sum.diffuseAlbedo / samples;
+    const float3 specularAlbedo = sum.specularAlbedo / samples;
+    const float roughness = sum.roughness / samples;
 
     // A NaN or infinity (from degenerate geometry) would poison every
     // later frame's average, so drop that sample.
@@ -560,6 +760,14 @@ extern "C" __global__ void __raygen__trace()
         direct = Splat(0.0f);
     if (!IsFinite(indirect))
         indirect = Splat(0.0f);
+    if (!IsFinite(specular))
+        specular = Splat(0.0f);
+    // Fireflies: once in a while a random path finds a very bright route
+    // (e.g. a glossy reflection of a sunlit spot) and one pixel flares for a
+    // frame. Capping the bounced light's brightness trades a little energy
+    // in those rare paths for a steady image.
+    indirect = ClampBrightness(indirect, kMaxIndirectBrightness);
+    specular = ClampBrightness(specular, kMaxIndirectBrightness);
 
     const PixelSurface centre = TracePixelCentre(pixel);
 
@@ -595,6 +803,9 @@ extern "C" __global__ void __raygen__trace()
     float3 blendedDirect = direct;
     float3 blendedIndirect = indirect;
     float3 blendedAlbedo = albedo;
+    float3 blendedSpecular = specular;
+    float3 blendedSpecularAlbedo = specularAlbedo;
+    float blendedRoughness = roughness;
     if (reuse)
     {
         frames = fminf(history.frames, static_cast<float>(params.historyLimit)) + 1.0f;
@@ -602,11 +813,31 @@ extern "C" __global__ void __raygen__trace()
         blendedDirect = Mix(history.direct, direct, t);
         blendedIndirect = Mix(history.indirect, indirect, t);
         blendedAlbedo = Mix(history.albedo, albedo, t);
+        blendedSpecularAlbedo = Mix(history.specularAlbedo, specularAlbedo, t);
+        blendedRoughness = history.roughness + (roughness - history.roughness) * t;
+
+        // Reflections move differently from the surface they are on (they
+        // show what is around it, from a changing angle), so following the
+        // surface smears a sharp one. While things move, smoother surfaces
+        // keep less history: a mirror none, a rough surface (whose blurry
+        // reflection hardly changes) as much as the rest.
+        float specularFrames = frames;
+        if (!params.nothingMoved)
+        {
+            // At least a quarter of the history even for a mirror: a single
+            // frame's reflection is too grainy, a short smear far less
+            // noticeable.
+            const float blurriness = fminf(fmaxf((blendedRoughness - 0.1f) / 0.4f, 0.25f), 1.0f);
+            specularFrames = fminf(frames, 1.0f + (frames - 1.0f) * blurriness);
+        }
+        blendedSpecular = Mix(history.specular, specular, 1.0f / specularFrames);
     }
 
     params.directOut[pixelIndex] = WithW(blendedDirect, frames);
     params.indirectOut[pixelIndex] = WithW(blendedIndirect, 1.0f);
     params.albedoOut[pixelIndex] = WithW(blendedAlbedo, 1.0f);
+    params.specularOut[pixelIndex] = WithW(blendedSpecular, 1.0f);
+    params.specularAlbedoOut[pixelIndex] = WithW(blendedSpecularAlbedo, blendedRoughness);
     params.positionOut[pixelIndex] = centre.hit ? WithW(centre.position, 1.0f) : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
     params.normalOut[pixelIndex] = centre.hit ? WithW(centre.normal, 0.0f) : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
 
@@ -615,6 +846,7 @@ extern "C" __global__ void __raygen__trace()
     // light (see LaunchParams::denoiserInput).
     const bool stillOnScreen = reuse && fabsf(motion.x) < 0.01f && fabsf(motion.y) < 0.01f;
     params.denoiserInput[pixelIndex] = WithW(stillOnScreen ? blendedIndirect : indirect, 1.0f);
+    params.specularDenoiserInput[pixelIndex] = WithW(stillOnScreen ? blendedSpecular : specular, 1.0f);
 
     // The temporal denoiser wants normals in camera space.
     const float3 n = centre.hit ? centre.normal : Splat(0.0f);
@@ -642,6 +874,7 @@ extern "C" __global__ void __raygen__downsample()
     const unsigned int halfIndex = half.y * params.halfWidth + half.x;
 
     float3 input = Splat(0.0f);
+    float3 specular = Splat(0.0f);
     float3 albedo = Splat(0.0f);
     float3 normal = Splat(0.0f);
     float distance = 0.0f;
@@ -660,6 +893,7 @@ extern "C" __global__ void __raygen__downsample()
             const unsigned int index = y * params.width + x;
 
             input += Xyz(params.denoiserInput[index]);
+            specular += Xyz(params.specularDenoiserInput[index]);
             albedo += Xyz(params.albedoOut[index]);
             const float2 f = params.flow[index];
             flow = make_float2(flow.x + f.x, flow.y + f.y);
@@ -677,6 +911,7 @@ extern "C" __global__ void __raygen__downsample()
     }
 
     params.halfInput[halfIndex] = WithW(input / count, 1.0f);
+    params.halfSpecularInput[halfIndex] = WithW(specular / count, 1.0f);
     params.halfAlbedo[halfIndex] = WithW(albedo / count, 1.0f);
     params.halfNormal[halfIndex] = hits > 0.0f ? WithW(Normalize(normal), distance / hits)
                                                : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -685,12 +920,12 @@ extern "C" __global__ void __raygen__downsample()
     params.halfFlowTrust[halfIndex] = trust;
 }
 
-// The denoised half-resolution indirect light at a full-resolution pixel:
-// a blend of the four nearest half-resolution pixels (bilinear), each
-// weighted down the more its surface differs from this pixel's in facing
-// and distance. That keeps light from one surface bleeding onto another
-// across an edge, e.g. from a lit wall onto the floor in front of it.
-static __device__ float3 UpsampleIndirect(const uint3& pixel, unsigned int pixelIndex)
+// A denoised half-resolution image at a full-resolution pixel: a blend of
+// the four nearest half-resolution pixels (bilinear), each weighted down the
+// more its surface differs from this pixel's in facing and distance. That
+// keeps light from one surface bleeding onto another across an edge, e.g.
+// from a lit wall onto the floor in front of it.
+static __device__ float3 UpsampleHalf(const float4* source, const uint3& pixel, unsigned int pixelIndex)
 {
     const float4 here = params.guideNormal[pixelIndex];
     const float3 normal = Xyz(here);
@@ -716,7 +951,7 @@ static __device__ float3 UpsampleIndirect(const uint3& pixel, unsigned int pixel
             const int y = min(max(y0 + j, 0), static_cast<int>(params.halfHeight) - 1);
             const unsigned int index = y * params.halfWidth + x;
             const float bilinear = (i ? tx : 1.0f - tx) * (j ? ty : 1.0f - ty);
-            const float3 light = Xyz(params.presentIndirect[index]);
+            const float3 light = Xyz(source[index]);
             plainSum += light * bilinear;
             plainWeightSum += bilinear;
 
@@ -741,19 +976,50 @@ static __device__ float3 UpsampleIndirect(const uint3& pixel, unsigned int pixel
 }
 
 // Puts the finished image together and turns it into the sRGB bytes shown
-// on screen: the direct light, plus the (denoised) indirect light
-// multiplied back by the surface's diffuse albedo.
+// on screen: the direct light, plus the (denoised) diffuse and reflected
+// light multiplied back by the surface's diffuse and specular albedo.
 extern "C" __global__ void __raygen__present()
 {
     const uint3 pixel = optixGetLaunchIndex();
     const unsigned int pixelIndex = pixel.y * params.width + pixel.x;
-    const float3 indirect = params.upsampleIndirect ? UpsampleIndirect(pixel, pixelIndex)
+
+    const float3 indirect = params.upsampleIndirect ? UpsampleHalf(params.presentIndirect, pixel, pixelIndex)
                                                     : Xyz(params.presentIndirect[pixelIndex]);
-    const float3 c = Xyz(params.presentDirect[pixelIndex]) + Xyz(params.presentAlbedo[pixelIndex]) * indirect;
+
+    // Reflections: a sharp one comes out of the path tracer nearly clean,
+    // and the denoiser (tuned by the soft diffuse light, perhaps at half
+    // resolution) would blur it, so it is used as traced. A blurry one is
+    // noisy, and denoised. Between the two, a blend by roughness.
+    const float4 specularAlbedo = params.presentSpecularAlbedo[pixelIndex];
+    float3 specular = Xyz(params.presentSpecular[pixelIndex]);
+    if (params.presentSpecularDenoised)
+    {
+        const float3 denoised = params.upsampleIndirect ? UpsampleHalf(params.presentSpecularDenoised, pixel, pixelIndex)
+                                                        : Xyz(params.presentSpecularDenoised[pixelIndex]);
+        const float t = fminf(fmaxf((specularAlbedo.w - 0.08f) / 0.22f, 0.0f), 1.0f);
+        specular = Mix(specular, denoised, t * t * (3.0f - 2.0f * t)); // smoothstep
+    }
+
+    const float3 c = Xyz(params.presentDirect[pixelIndex]) + Xyz(params.presentAlbedo[pixelIndex]) * indirect +
+                     Xyz(specularAlbedo) * specular;
 
     // Lighting is computed in linear light; the screen expects sRGB.
     params.output[pixelIndex] = make_uchar4(ToByte(LinearToSrgb(c.x)), ToByte(LinearToSrgb(c.y)),
                                             ToByte(LinearToSrgb(c.z)), 255);
+}
+
+// One of the material's texture maps at `uv`, blurred to mip level
+// `lodBase` + the map's own size (see the closest-hit program). White for an
+// empty slot, which leaves the material's value as it is, like lit.frag's
+// white fallback texture.
+static __forceinline__ __device__ float3 SampleMap(const InstanceData& instance, MaterialMap map, float u, float v,
+                                                   float lodBase)
+{
+    const cudaTextureObject_t texture = instance.maps[map];
+    if (!texture)
+        return Splat(1.0f);
+    const float4 c = tex2DLod<float4>(texture, u, v, lodBase + instance.mapLog2Size[map]);
+    return make_float3(c.x, c.y, c.z);
 }
 
 extern "C" __global__ void __closesthit__surface()
@@ -771,7 +1037,13 @@ extern "C" __global__ void __closesthit__surface()
     const float3 objectNormal = v0.normal * w0 + v1.normal * bary.x + v2.normal * bary.y;
     const float3 objectPosition = v0.position * w0 + v1.position * bary.x + v2.position * bary.y;
 
+    // Texture coordinate, mapped as in lit.frag: uv * tiling + offset.
+    const float2 tiling = make_float2(instance.uvTiling[0], instance.uvTiling[1]);
+    const float u = (v0.u * w0 + v1.u * bary.x + v2.u * bary.y) * tiling.x + instance.uvOffset[0];
+    const float v = (v0.v * w0 + v1.v * bary.x + v2.v * bary.y) * tiling.y + instance.uvOffset[1];
+
     const float3 rayDir = optixGetWorldRayDirection();
+    const float distance = optixGetRayTmax();
 
     // The flat triangle's normal, turned to face the side the ray came from.
     // Used to push rays off the surface, and to flip the shading normal on
@@ -786,6 +1058,64 @@ extern "C" __global__ void __closesthit__surface()
     if (Dot(N, Ng) < 0.0f)
         N = -N;
 
+    // --- Texture detail level (ray cones) ---
+    // Rasterizers pick a mip level from how fast UVs change between
+    // neighbouring pixels; a ray has no neighbours, so instead it is treated
+    // as a cone and compared with how much texture the triangle stretches
+    // over the area the cone covers where it lands (Akenine-Moller et al.,
+    // "Texture Level of Detail Strategies for Real-Time Ray Tracing").
+    const float3 edge1 = v1.position - v0.position;
+    const float3 edge2 = v2.position - v0.position;
+    const float du1 = v1.u - v0.u, dv1 = v1.v - v0.v;
+    const float du2 = v2.u - v0.u, dv2 = v2.v - v0.v;
+    const float worldArea = Length(Cross(optixTransformVectorFromObjectToWorldSpace(edge1),
+                                         optixTransformVectorFromObjectToWorldSpace(edge2)));
+    const float uvArea = fabsf((du1 * dv2 - du2 * dv1) * tiling.x * tiling.y);
+    float lodBase = -16.0f; // sharpest level, if the triangle has no UV area
+    if (worldArea > 0.0f && uvArea > 0.0f)
+    {
+        const SurfaceHit& caller = *GetSurfaceHit();
+        const float coneWidth = caller.coneWidth + distance * caller.coneSpread;
+        // Seen at a grazing angle, the cone smears over more of the surface.
+        const float cosine = fmaxf(fabsf(Dot(rayDir, Ng)), 0.05f);
+        // + log2(map size) per map, in SampleMap.
+        lodBase = 0.5f * log2f(uvArea / worldArea) + log2f(fmaxf(coneWidth, 1e-8f) / cosine);
+    }
+
+    // --- Material, with its texture maps (as in lit.frag) ---
+    const float3 baseColor = instance.baseColor * vertexColor * SampleMap(instance, MAP_BASE_COLOR, u, v, lodBase);
+    const float metallic = instance.metallic * SampleMap(instance, MAP_METALLIC, u, v, lodBase).z;
+    const float roughness = instance.roughness * SampleMap(instance, MAP_ROUGHNESS, u, v, lodBase).y;
+    const float ao = 1.0f + (SampleMap(instance, MAP_AO, u, v, lodBase).x - 1.0f) * instance.aoStrength;
+    const float3 emission = instance.emission * SampleMap(instance, MAP_EMISSION, u, v, lodBase);
+
+    // Normal map: stored as 0..1 per channel, a -1..1 direction in the
+    // surface's tangent frame (along its U and V directions), with strength
+    // scaling the sideways tilt.
+    if (instance.maps[MAP_NORMAL])
+    {
+        const float determinant = du1 * dv2 - du2 * dv1;
+        if (fabsf(determinant) > 1e-12f)
+        {
+            // Which way U and V run across this triangle, in the world.
+            const float3 tangentU = optixTransformVectorFromObjectToWorldSpace((edge1 * dv2 - edge2 * dv1) / determinant);
+            const float3 tangentV = optixTransformVectorFromObjectToWorldSpace((edge2 * du1 - edge1 * du2) / determinant);
+            // Made perpendicular to the shading normal; the bitangent keeps
+            // V's direction, so mirrored UVs still read the map correctly.
+            const float3 T = Normalize(tangentU - N * Dot(N, tangentU));
+            float3 B = Cross(N, T);
+            if (Dot(B, tangentV) < 0.0f)
+                B = -B;
+
+            float3 mapped = SampleMap(instance, MAP_NORMAL, u, v, lodBase) * 2.0f - Splat(1.0f);
+            mapped.x *= instance.normalStrength;
+            mapped.y *= instance.normalStrength;
+            const float3 bent = T * mapped.x + B * mapped.y + N * mapped.z;
+            if (Dot(bent, bent) > 1e-12f)
+                N = Normalize(bent);
+        }
+    }
+
     // The same point on the object, placed with last frame's transform.
     const float* m = instance.previousTransform;
     const float3 previousPosition = make_float3(
@@ -795,14 +1125,16 @@ extern "C" __global__ void __closesthit__surface()
 
     SurfaceHit& s = *GetSurfaceHit();
     s.hit = true;
-    s.position = optixGetWorldRayOrigin() + rayDir * optixGetRayTmax();
+    s.distance = distance;
+    s.position = optixGetWorldRayOrigin() + rayDir * distance;
     s.previousPosition = previousPosition;
     s.geometricNormal = Ng;
     s.normal = N;
-    s.baseColor = instance.baseColor * vertexColor;
-    s.emission = instance.emission;
-    s.metallic = instance.metallic;
-    s.roughness = instance.roughness;
+    s.baseColor = baseColor;
+    s.emission = emission;
+    s.metallic = metallic;
+    s.roughness = roughness;
+    s.ao = ao;
 }
 
 extern "C" __global__ void __miss__surface()

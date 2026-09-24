@@ -40,6 +40,12 @@ void AssetsPanel::OpenImportDialog(AssetLibrary& assets)
 
 void AssetsPanel::Draw(AssetLibrary& assets, Scene& scene, Entity* selected)
 {
+    // An undo can take away the selected material; don't keep editing it.
+    const auto& materials = assets.GetMaterials();
+    if (std::none_of(materials.begin(), materials.end(),
+                     [&](const std::unique_ptr<Material>& m) { return m.get() == m_SelectedMaterial; }))
+        m_SelectedMaterial = nullptr;
+
     // The first time this panel appears in a saved layout that predates it,
     // open it as a tab beside the Hierarchy rather than floating.
     if (const ImGuiWindow* hierarchy = ImGui::FindWindowByName("Hierarchy"); hierarchy && hierarchy->DockId)

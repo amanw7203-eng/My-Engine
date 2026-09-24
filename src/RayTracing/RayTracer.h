@@ -3,12 +3,14 @@
 #include "RayTracing/CudaBuffer.h"
 #include "RayTracing/Denoiser.h"
 #include "RayTracing/InteropTexture.h"
+#include "Scene/Light.h"
 
 #include <cuda_runtime.h>
 #include <glm/glm.hpp>
 #include <optix_types.h>
 
 #include <filesystem>
+#include <vector>
 
 class OptixContext;
 class SceneAccel;
@@ -52,6 +54,7 @@ public:
         glm::vec3 ambientColor;  // sky light, arriving from every open direction
         glm::vec3 background;
         bool shadowsEnabled;
+        bool reflections;        // trace reflections (else a plain sky is reflected)
         bool cullBackFaces;
         int maxBounces;          // ambient light bounces; 0 = flat ambient as in raster
         int samplesPerPixel;     // light paths per pixel per frame
@@ -62,6 +65,9 @@ public:
         // While the camera moves, average at most this many past frames:
         // fewer adapts faster (less smearing), more is less noisy.
         int movingHistoryFrames;
+        // Changing these counts as scene motion (a short history), not as a
+        // lighting change that starts over: lights get moved around a lot.
+        std::vector<ScenePointLight> pointLights;
 
         bool operator==(const FrameSettings&) const = default;
     };
@@ -121,6 +127,7 @@ private:
     OptixShaderBindingTable m_DownsampleSbt{};
 
     CudaBuffer m_LaunchParams;
+    CudaBuffer m_PointLights; // DevicePointLight array, grown as needed
     InteropTexture m_Output;
     Denoiser m_Denoiser;
 
@@ -129,24 +136,30 @@ private:
     // written, then they swap.
     CudaBuffer m_Direct[2];
     CudaBuffer m_Indirect[2];
+    CudaBuffer m_Specular[2];
+    CudaBuffer m_SpecularAlbedo[2];
     CudaBuffer m_Albedo[2];
     CudaBuffer m_Normal[2];
     CudaBuffer m_Position[2];
     CudaBuffer m_DenoiserInput;
+    CudaBuffer m_SpecularDenoiserInput;
     CudaBuffer m_GuideNormal;
     CudaBuffer m_Flow;      // float2
     CudaBuffer m_FlowTrust; // float
     // The denoised indirect light. The temporal denoiser also reads it
     // back next frame as its previous result.
     CudaBuffer m_Denoised;
+    CudaBuffer m_SpecularDenoised;
     // Half resolution denoising (see LaunchParams): the downsampled inputs
     // (float4 unless noted) and the denoised result.
     CudaBuffer m_HalfInput;
+    CudaBuffer m_HalfSpecularInput;
     CudaBuffer m_HalfAlbedo;
     CudaBuffer m_HalfNormal;
     CudaBuffer m_HalfFlow;      // float2
     CudaBuffer m_HalfFlowTrust; // float
     CudaBuffer m_HalfDenoised;
+    CudaBuffer m_HalfSpecularDenoised;
     int m_Current = 0;          // which of each pair holds last frame's
     bool m_HistoryValid = false;
     // The denoiser ran recently in the current mode, so m_Denoised or

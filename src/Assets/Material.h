@@ -42,4 +42,6 @@ struct Material
     glm::vec2 offset{ 0.0f };
 
     bool doubleSided = false; // draw back faces too (for flat quads/planes)
+
+    bool operator==(const Material&) const = default;
 };
